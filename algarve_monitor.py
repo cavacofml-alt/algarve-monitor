@@ -921,8 +921,60 @@ def scrape_supercasa(perfil):
             items,p=paginar_scraperapi(tpl,parse); res.extend(items); pags+=p
     return res,pags
 
+def _api_scrape(url_tpl, base, fonte, zona, extra_sels=None):
+    """Usa ScraperAPI com render=true para sites com JavaScript."""
+    def parse(html):
+        soup = BeautifulSoup(html, "html.parser")
+        items = []
+        # Seletores genéricos + específicos por fonte
+        sels = [".property",".card","article",".imovel",
+                ".listing-item","[class*='property-card']",
+                "[class*='card-anchor']","[class*='listing']","li[class]"]
+        if extra_sels:
+            sels = extra_sels + sels
+        for sel in sels:
+            found = soup.select(sel)
+            for it in found:
+                lt = it.select_one("a")
+                pt = it.select_one("[class*='price'],[class*='preco'],.price,.preco")
+                tt = it.select_one("h2,h3,h4,[class*='title'],[class*='name']")
+                img = it.select_one("img")
+                if not lt or not lt.get("href"): continue
+                href = lt.get("href","")
+                link = href if href.startswith("http") else base.rstrip("/")+"/"+href.lstrip("/")
+                if link == base: continue
+                titulo = tt.get_text(strip=True) if tt else fonte
+                preco  = pt.get_text(strip=True) if pt else "N/D"
+                # Filtrar entradas sem preço nem título útil
+                if len(titulo) < 5 and preco == "N/D": continue
+                imagem = img.get("src") or img.get("data-src") if img else None
+                items.append(fazer_item(link, titulo, preco, fonte, zona, imagem))
+            if items: break
+        return items
+
+    todos = []; pag = 1
+    for pag in range(1, MAX_PAGINAS+1):
+        url = url_tpl.format(page=pag)
+        def _fetch(u=url):
+            if SCRAPERAPI_KEY:
+                api = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={requests.utils.quote(u)}&render=true&wait=3000"
+                r = requests.get(api, timeout=60, headers=random_headers())
+            else:
+                r = requests.get(u, headers=random_headers(), timeout=15)
+            return parse(r.text)
+        try:
+            items = com_retry(_fetch)
+            log.info(f"    api_scrape pag {pag}: {len(items)} items")
+            if not items: break
+            todos.extend(items)
+            time.sleep(random.uniform(1,2))
+        except Exception as e:
+            log.error(f"  api_scrape pag {pag}: {e}"); break
+    return todos, pag
+
 def _sel_scrape(url_tpl,base,fonte,zona):
-    return paginar_selenium(url_tpl, lambda html: _parse_generic(html,base,fonte,zona))
+    """Mantido para compatibilidade — usa _api_scrape."""
+    return _api_scrape(url_tpl, base, fonte, zona)
 
 def scrape_casasdosotavento(p):
     res=[]; pags=0
@@ -930,17 +982,17 @@ def scrape_casasdosotavento(p):
         zl=TODAS_AS_ZONAS.get(zs,zs)
         url=(f"https://www.casasdosotavento.pt/imoveis/venda/"
              f"?concelho={zs}&preco_max={p['preco_max']}&quartos_min={p['quartos_min']}&page={{page}}")
-        try: its,pg=_sel_scrape(url,"https://www.casasdosotavento.pt","Casas do Sotavento",zl); res.extend(its); pags+=pg
+        try: its,pg=_api_scrape(url,"https://www.casasdosotavento.pt","Casas do Sotavento",zl); res.extend(its); pags+=pg
         except Exception as e: log.error(f"CasasSotavento/{zs}: {e}")
         time.sleep(random.uniform(2,4))
     return res,pags
 
 def scrape_algarvila(p):
-    try: return _sel_scrape("https://www.algarvila.com/en-gb/properties?page={page}","https://www.algarvila.com","AlgarVila","Tavira")
+    try: return _api_scrape("https://www.algarvila.com/en-gb/properties?page={page}","https://www.algarvila.com","AlgarVila","Tavira")
     except Exception as e: log.error(f"AlgarVila: {e}"); return [],0
 
 def scrape_villastavira(p):
-    try: return _sel_scrape("https://www.villastavira.pt/imoveis?page={page}","https://www.villastavira.pt","Villas Tavira","Tavira")
+    try: return _api_scrape("https://www.villastavira.pt/imoveis?page={page}","https://www.villastavira.pt","Villas Tavira","Tavira")
     except Exception as e: log.error(f"VillasTavira: {e}"); return [],0
 
 def scrape_imocusto(p):
@@ -948,18 +1000,18 @@ def scrape_imocusto(p):
     except Exception as e: log.error(f"Imocusto: {e}"); return [],0
 
 def scrape_lnhouse(p):
-    try: return _sel_scrape("https://www.lnhouse.pt/imoveis?page={page}","https://www.lnhouse.pt","LNHouse","VRSA/Castro Marim")
+    try: return _api_scrape("https://www.lnhouse.pt/imoveis?page={page}","https://www.lnhouse.pt","LNHouse","VRSA/Castro Marim")
     except Exception as e: log.error(f"LNHouse: {e}"); return [],0
 
 def scrape_sortami(p):
     url=f"https://www.sortami.pt/imoveis/comprar?preco_max={p['preco_max']}&quartos_min={p['quartos_min']}&page={{page}}"
-    try: return _sel_scrape(url,"https://www.sortami.pt","Sortami","Algarve Sotavento")
+    try: return _api_scrape(url,"https://www.sortami.pt","Sortami","Algarve Sotavento")
     except Exception as e: log.error(f"Sortami: {e}"); return [],0
 
 def scrape_garvetur(p):
     url=(f"https://www.garvetur.pt/imoveis/venda"
          f"&preco_max={p['preco_max']}&quartos_min={p['quartos_min']}&zona={','.join(p['zonas'])}&page={{page}}")
-    try: return _sel_scrape(url,"https://www.garvetur.pt","Garvetur","Algarve")
+    try: return _api_scrape(url,"https://www.garvetur.pt","Garvetur","Algarve")
     except Exception as e: log.error(f"Garvetur: {e}"); return [],0
 
 def scrape_engelvoelkers(p):
@@ -969,9 +1021,12 @@ def scrape_engelvoelkers(p):
         url=(f"https://www.engelvoelkers.com/pt/en/search/?q=&pageSize=20&adType=BUY"
              f"&realEstateType=APARTMENT,HOUSE&country=PRT&city={zs}"
              f"&priceMax={p['preco_max']}&roomsMin={p['quartos_min']}&page={{page}}")
-        try: its,pg=_sel_scrape(url,"https://www.engelvoelkers.com","Engel & Völkers",zl); res.extend(its); pags+=pg
+        try:
+            its,pg=_api_scrape(url,"https://www.engelvoelkers.com","Engel & Völkers",zl,
+                extra_sels=["[class*='property-card']","[class*='PropertyCard']","[class*='ev-property']"])
+            res.extend(its); pags+=pg
         except Exception as e: log.error(f"E&V/{zs}: {e}")
-        time.sleep(random.uniform(2,4))
+        time.sleep(random.uniform(1,2))
     return res,pags
 
 def scrape_era(p):
@@ -980,9 +1035,12 @@ def scrape_era(p):
         zl=TODAS_AS_ZONAS.get(zs,zs)
         url=(f"https://www.era.pt/comprar/imoveis/{zs}/?preco_max={p['preco_max']}"
              f"&quartos_min={p['quartos_min']}&tipologia=apartamento,moradia&page={{page}}")
-        try: its,pg=_sel_scrape(url,"https://www.era.pt","ERA Imobiliária",zl); res.extend(its); pags+=pg
+        try:
+            its,pg=_api_scrape(url,"https://www.era.pt","ERA Imobiliária",zl,
+                extra_sels=[".card-anchor",".card",".filter--results .card"])
+            res.extend(its); pags+=pg
         except Exception as e: log.error(f"ERA/{zs}: {e}")
-        time.sleep(random.uniform(2,4))
+        time.sleep(random.uniform(1,2))
     return res,pags
 
 def scrape_remax(p):
@@ -991,17 +1049,20 @@ def scrape_remax(p):
         zl=TODAS_AS_ZONAS.get(zs,zs)
         url=(f"https://www.remax.pt/comprar/{zs}/?pricemax={p['preco_max']}"
              f"&rooms={p['quartos_min']}&type=apartamento,moradia&page={{page}}")
-        try: its,pg=_sel_scrape(url,"https://www.remax.pt","RE/MAX",zl); res.extend(its); pags+=pg
+        try:
+            its,pg=_api_scrape(url,"https://www.remax.pt","RE/MAX",zl,
+                extra_sels=["[class*='listing-card']","[class*='property-card']","a[href*='/imoveis/']"])
+            res.extend(its); pags+=pg
         except Exception as e: log.error(f"REMAX/{zs}: {e}")
-        time.sleep(random.uniform(2,4))
+        time.sleep(random.uniform(1,2))
     return res,pags
 
 def scrape_kwportugal(p):
     res=[]; pags=0
     for zs in p["zonas"]:
         zl=TODAS_AS_ZONAS.get(zs,zs)
-        url=f"https://www.kwportugal.pt/imoveis/comprar/{zs}/?priceMax={p['preco_max']}&rooms={p['quartos_min']}&page={{page}}"
-        try: its,pg=_sel_scrape(url,"https://www.kwportugal.pt","KW Portugal",zl); res.extend(its); pags+=pg
+        url=f"https://www.kwportugal.pt/pt/pesquisa/?localizacao={zs}&tipo=comprar&priceMax={p['preco_max']}&rooms={p['quartos_min']}&page={{page}}"
+        try: its,pg=_api_scrape(url,"https://www.kwportugal.pt","KW Portugal",zl); res.extend(its); pags+=pg
         except Exception as e: log.error(f"KW/{zs}: {e}")
         time.sleep(random.uniform(2,4))
     return res,pags
