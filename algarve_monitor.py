@@ -1369,3 +1369,4 @@ if __name__=="__main__":
     schedule.every(12).hours.do(verificar_scrapers_com_falha)
     log.info("A monitorizar. Ctrl+C para parar.\n")
     while True: schedule.run_pending(); time.sleep(60)
+"# v4.1" 
