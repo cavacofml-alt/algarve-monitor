@@ -577,12 +577,36 @@ def get_driver():
     opts.add_experimental_option("useAutomationExtension",False)
 
     import subprocess
-    # Hardcoded paths for Docker container (verified working)
-    chromium_bin = "/usr/bin/chromium"
-    chromedriver_bin = "/usr/bin/chromedriver"
-    log.info(f"Using hardcoded Chromium: {chromium_bin}, exists={os.path.exists(chromium_bin)}")
+    # Check env vars first (set by Dockerfile)
+    chromium_bin = os.getenv("CHROME_BIN")
+    chromedriver_bin = os.getenv("CHROMEDRIVER_BIN")
 
+    # Auto-detect if not set
+    if not chromium_bin or not os.path.exists(chromium_bin):
+        chromium_bin = None
+        for path in ["/usr/bin/chromium", "/usr/bin/chromium-browser",
+                     "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable"]:
+            if os.path.exists(path):
+                chromium_bin = path; break
+        if not chromium_bin:
+            for pattern in ["/nix/store/*/bin/chromium","/nix/store/*/bin/chromium-browser"]:
+                matches = glob.glob(pattern)
+                if matches: chromium_bin = matches[0]; break
+        if not chromium_bin:
+            try:
+                result = subprocess.run(["which","chromium"], capture_output=True, text=True)
+                if result.returncode == 0: chromium_bin = result.stdout.strip()
+            except: pass
 
+    if not chromedriver_bin or not os.path.exists(chromedriver_bin):
+        chromedriver_bin = None
+        for path in ["/usr/bin/chromedriver", "/usr/bin/chromium-driver"]:
+            if os.path.exists(path):
+                chromedriver_bin = path; break
+        if not chromedriver_bin:
+            for pattern in ["/nix/store/*/bin/chromedriver"]:
+                matches = glob.glob(pattern)
+                if matches: chromedriver_bin = matches[0]; break
 
     if chromium_bin:
         opts.binary_location = chromium_bin
@@ -654,14 +678,20 @@ def paginar_requests(url_tpl, parse_fn):
         except Exception as e: log.error(f"Pag {pag}: {e}"); break
     return todos,pag
 
-def paginar_selenium(url_tpl,parse_fn):
-    todos=[]; pag=1
-    for pag in range(1,MAX_PAGINAS+1):
-        html=selenium_get(url_tpl.format(page=pag),wait_sel=".property,article",wait_s=7)
-        items=parse_fn(html)
-        if not items: break
-        todos.extend(items); time.sleep(random.uniform(2,4))
-    return todos,pag
+def paginar_selenium(url_tpl, parse_fn, wait_sel="article, .property, .listing, [class*='card']", wait_s=10):
+    todos = []; pag = 1
+    for pag in range(1, MAX_PAGINAS+1):
+        url = url_tpl.format(page=pag)
+        try:
+            html = selenium_get(url, wait_sel=wait_sel, wait_s=wait_s)
+            items = parse_fn(html)
+            log.debug(f"  pagina {pag}: {len(items)} items")
+            if not items: break
+            todos.extend(items)
+            time.sleep(random.uniform(2, 4))
+        except Exception as e:
+            log.error(f"  paginar_selenium pag {pag}: {e}"); break
+    return todos, pag
 
 def _parse_generic(html,base,fonte,zona):
     soup=BeautifulSoup(html,"html.parser"); items=[]
@@ -682,100 +712,110 @@ def _parse_generic(html,base,fonte,zona):
         if found: break
     return items
 
+def _parse_idealista(html, tl, zl):
+    soup = BeautifulSoup(html, "html.parser"); its = []
+    for it in soup.select("article.item"):
+        lt = it.select_one("a.item-link"); pt = it.select_one(".item-price")
+        tt = it.select_one(".item-title"); img = it.select_one("img")
+        if not lt: continue
+        its.append(fazer_item("https://www.idealista.pt" + lt.get("href",""),
+            tt.get_text(strip=True) if tt else tl,
+            pt.get_text(strip=True) if pt else "N/D",
+            "Idealista", zl, img.get("src") or img.get("data-src") if img else None))
+    return its
+
 def scrape_idealista(perfil):
-    res=[]; pags=0
+    res = []; pags = 0
     for ts in perfil["tipos"]:
-        tl={"apartamentos":"Apartamento","moradias-e-vivendas":"Moradia"}.get(ts,ts)
+        tl = {"apartamentos":"Apartamento","moradias-e-vivendas":"Moradia"}.get(ts,ts)
         for zs in perfil["zonas"]:
-            zl=TODAS_AS_ZONAS.get(zs,zs)
-            tpl=(f"https://www.idealista.pt/comprar-{ts}/{zs}-faro/"
-                 f"?preco-maximo={perfil['preco_max']}&quartos-min={perfil['quartos_min']}&pagina={{page}}")
-            def parse(html,tl=tl,zl=zl):
-                soup=BeautifulSoup(html,"html.parser"); its=[]
-                for it in soup.select("article.item"):
-                    lt=it.select_one("a.item-link"); pt=it.select_one(".item-price")
-                    tt=it.select_one(".item-title"); img=it.select_one("img")
-                    if not lt: continue
-                    its.append(fazer_item("https://www.idealista.pt"+lt.get("href",""),
-                        tt.get_text(strip=True) if tt else tl,
-                        pt.get_text(strip=True) if pt else "N/D",
-                        "Idealista",zl,img.get("src") or img.get("data-src") if img else None))
-                return its
-            items,p=paginar_requests(tpl,parse); res.extend(items); pags+=p
-    return res,pags
+            zl = TODAS_AS_ZONAS.get(zs,zs)
+            tpl = (f"https://www.idealista.pt/comprar-{ts}/{zs}-faro/"
+                   f"?preco-maximo={perfil['preco_max']}&quartos-min={perfil['quartos_min']}&pagina={{page}}")
+            items, p = paginar_selenium(tpl, lambda html, tl=tl, zl=zl: _parse_idealista(html, tl, zl))
+            res.extend(items); pags += p
+    return res, pags
+
+def _parse_imovirtual(html, tl, zl):
+    soup = BeautifulSoup(html, "html.parser"); its = []
+    for it in soup.select("article[data-cy='listing-item']"):
+        lt = it.select_one("a"); pt = it.select_one("[data-cy='listing-item-price']")
+        tt = it.select_one("[data-cy='listing-item-title']"); img = it.select_one("img")
+        if not lt: continue
+        its.append(fazer_item("https://www.imovirtual.com" + lt.get("href",""),
+            tt.get_text(strip=True) if tt else tl,
+            pt.get_text(strip=True) if pt else "N/D",
+            "Imovirtual", zl, img.get("src") or img.get("data-src") if img else None))
+    return its
 
 def scrape_imovirtual(perfil):
-    res=[]; pags=0
+    res = []; pags = 0
     for ts in perfil["tipos"]:
-        tl={"apartamentos":"Apartamento","moradias-e-vivendas":"Moradia"}.get(ts,ts)
-        tiv="apartamento" if "apart" in ts else "moradia"
+        tl = {"apartamentos":"Apartamento","moradias-e-vivendas":"Moradia"}.get(ts,ts)
+        tiv = "apartamento" if "apart" in ts else "moradia"
         for zs in perfil["zonas"]:
-            zl=TODAS_AS_ZONAS.get(zs,zs)
-            tpl=(f"https://www.imovirtual.com/{zs}/comprar/{tiv}/"
-                 f"?priceMax={perfil['preco_max']}&roomsMin={perfil['quartos_min']}&page={{page}}")
-            def parse(html,tl=tl,zl=zl):
-                soup=BeautifulSoup(html,"html.parser"); its=[]
-                for it in soup.select("article[data-cy='listing-item']"):
-                    lt=it.select_one("a"); pt=it.select_one("[data-cy='listing-item-price']")
-                    tt=it.select_one("[data-cy='listing-item-title']"); img=it.select_one("img")
-                    if not lt: continue
-                    its.append(fazer_item("https://www.imovirtual.com"+lt.get("href",""),
-                        tt.get_text(strip=True) if tt else tl,
-                        pt.get_text(strip=True) if pt else "N/D",
-                        "Imovirtual",zl,img.get("src") or img.get("data-src") if img else None))
-                return its
-            items,p=paginar_requests(tpl,parse); res.extend(items); pags+=p
-    return res,pags
+            zl = TODAS_AS_ZONAS.get(zs,zs)
+            tpl = (f"https://www.imovirtual.com/{zs}/comprar/{tiv}/"
+                   f"?priceMax={perfil['preco_max']}&roomsMin={perfil['quartos_min']}&page={{page}}")
+            items, p = paginar_selenium(tpl, lambda html, tl=tl, zl=zl: _parse_imovirtual(html, tl, zl))
+            res.extend(items); pags += p
+    return res, pags
+
+def _parse_casasapo(html, tl, zl):
+    soup = BeautifulSoup(html, "html.parser"); its = []
+    for it in soup.select(".property-info-content,.searchResultProperty,.card-property"):
+        lt = it.select_one("a"); pt = it.select_one(".property-price,.price,[class*='price']")
+        tt = it.select_one(".property-title,h2,h3"); img = it.select_one("img")
+        if not lt: continue
+        href = lt.get("href","")
+        link = href if href.startswith("http") else "https://casa.sapo.pt" + href
+        its.append(fazer_item(link,
+            tt.get_text(strip=True) if tt else tl,
+            pt.get_text(strip=True) if pt else "N/D",
+            "Casa SAPO", zl, img.get("src") if img else None))
+    return its
 
 def scrape_casasapo(perfil):
-    res=[]; pags=0
+    res = []; pags = 0
     for ts in perfil["tipos"]:
-        tl={"apartamentos":"Apartamento","moradias-e-vivendas":"Moradia"}.get(ts,ts)
-        tsk="apartamentos" if "apart" in ts else "moradias"
+        tl = {"apartamentos":"Apartamento","moradias-e-vivendas":"Moradia"}.get(ts,ts)
+        tsk = "apartamentos" if "apart" in ts else "moradias"
         for zs in perfil["zonas"]:
-            zl=TODAS_AS_ZONAS.get(zs,zs)
-            tips=",".join([f"T{i}" for i in range(perfil["quartos_min"],7)])
-            tpl=(f"https://casa.sapo.pt/comprar-{tsk}/{zs}/"
-                 f"?precomax={perfil['preco_max']}&tipologia={tips}&pn={{page}}")
-            def parse(html,tl=tl,zl=zl):
-                soup=BeautifulSoup(html,"html.parser"); its=[]
-                for it in soup.select(".property-info-content,.searchResultProperty"):
-                    lt=it.select_one("a"); pt=it.select_one(".property-price,.price")
-                    tt=it.select_one(".property-title,h2"); img=it.select_one("img")
-                    if not lt: continue
-                    href=lt.get("href","")
-                    link=href if href.startswith("http") else "https://casa.sapo.pt"+href
-                    its.append(fazer_item(link,tt.get_text(strip=True) if tt else tl,
-                        pt.get_text(strip=True) if pt else "N/D","Casa SAPO",zl,
-                        img.get("src") if img else None))
-                return its
-            items,p=paginar_requests(tpl,parse); res.extend(items); pags+=p
-    return res,pags
+            zl = TODAS_AS_ZONAS.get(zs,zs)
+            tips = ",".join([f"T{i}" for i in range(perfil["quartos_min"],7)])
+            tpl = (f"https://casa.sapo.pt/comprar-{tsk}/{zs}/"
+                   f"?precomax={perfil['preco_max']}&tipologia={tips}&pn={{page}}")
+            items, p = paginar_selenium(tpl, lambda html, tl=tl, zl=zl: _parse_casasapo(html, tl, zl))
+            res.extend(items); pags += p
+    return res, pags
+
+def _parse_supercasa(html, tl, zl):
+    soup = BeautifulSoup(html, "html.parser"); its = []
+    for it in soup.select("[data-id],.property-item,article,.listing-item"):
+        lt = it.select_one("a"); pt = it.select_one(".price,[class*='price'],[class*='Price']")
+        tt = it.select_one("h2,h3,[class*='title'],[class*='Title']"); img = it.select_one("img")
+        if not lt: continue
+        href = lt.get("href","")
+        link = href if href.startswith("http") else "https://supercasa.pt" + href
+        its.append(fazer_item(link,
+            tt.get_text(strip=True) if tt else tl,
+            pt.get_text(strip=True) if pt else "N/D",
+            "SuperCasa", zl, img.get("src") if img else None))
+    return its
 
 def scrape_supercasa(perfil):
-    res=[]; pags=0
+    res = []; pags = 0
     for ts in perfil["tipos"]:
-        tl={"apartamentos":"Apartamento","moradias-e-vivendas":"Moradia"}.get(ts,ts)
-        tsc="apartamentos" if "apart" in ts else "moradias"
+        tl = {"apartamentos":"Apartamento","moradias-e-vivendas":"Moradia"}.get(ts,ts)
+        tsc = "apartamentos" if "apart" in ts else "moradias"
         for zs in perfil["zonas"]:
-            zl=TODAS_AS_ZONAS.get(zs,zs)
-            tips=",".join([f"T{i}" for i in range(perfil["quartos_min"],6)])
-            tpl=(f"https://supercasa.pt/comprar-{tsc}/{zs}/"
-                 f"?preco-max={perfil['preco_max']}&tipologia={tips}&pagina={{page}}")
-            def parse(html,tl=tl,zl=zl):
-                soup=BeautifulSoup(html,"html.parser"); its=[]
-                for it in soup.select("[data-id],.property-item,article"):
-                    lt=it.select_one("a"); pt=it.select_one(".price,[class*='price']")
-                    tt=it.select_one("h2,h3,[class*='title']"); img=it.select_one("img")
-                    if not lt: continue
-                    href=lt.get("href","")
-                    link=href if href.startswith("http") else "https://supercasa.pt"+href
-                    its.append(fazer_item(link,tt.get_text(strip=True) if tt else tl,
-                        pt.get_text(strip=True) if pt else "N/D","SuperCasa",zl,
-                        img.get("src") if img else None))
-                return its
-            items,p=paginar_requests(tpl,parse); res.extend(items); pags+=p
-    return res,pags
+            zl = TODAS_AS_ZONAS.get(zs,zs)
+            tips = ",".join([f"T{i}" for i in range(perfil["quartos_min"],6)])
+            tpl = (f"https://supercasa.pt/comprar-{tsc}/{zs}/"
+                   f"?preco-max={perfil['preco_max']}&tipologia={tips}&pagina={{page}}")
+            items, p = paginar_selenium(tpl, lambda html, tl=tl, zl=zl: _parse_supercasa(html, tl, zl))
+            res.extend(items); pags += p
+    return res, pags
 
 def _sel_scrape(url_tpl,base,fonte,zona):
     return paginar_selenium(url_tpl, lambda html: _parse_generic(html,base,fonte,zona))
