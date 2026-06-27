@@ -15,7 +15,9 @@ Novidades v4:
 
 import os, re, time, json, random, logging, smtplib, schedule, threading
 import hashlib, secrets, functools
-import requests, psycopg2, psycopg2.extras
+import requests
+import psycopg
+from psycopg import rows as psycopg_rows
 from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -115,7 +117,7 @@ def proxied_get(url, **kwargs):
 
 def get_db():
     if not DATABASE_URL: raise RuntimeError("DATABASE_URL não definida.")
-    return psycopg2.connect(DATABASE_URL, sslmode="require")
+    return psycopg.connect(DATABASE_URL)
 
 def init_db():
     with get_db() as conn:
@@ -268,7 +270,7 @@ def guardar_imovel(item, perfil_nome, score):
 def marcar_removidos(ids_vistos, perfil_nome):
     removidos = []
     with get_db() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(row_factory=psycopg_rows.dict_row) as cur:
             cur.execute("""
                 SELECT id,titulo,link,zona FROM imoveis
                 WHERE perfil_nome=%s AND disponivel=TRUE
@@ -304,7 +306,7 @@ def registar_log_scraper(fonte, perfil_nome, total, novos, paginas=1, erros=""):
 def verificar_scrapers_com_falha():
     """Envia email se um scraper falhou 3+ rondas consecutivas."""
     with get_db() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(row_factory=psycopg_rows.dict_row) as cur:
             cur.execute("""
                 SELECT fonte, perfil_nome,
                        COUNT(*) FILTER (WHERE erros!='' AND erros IS NOT NULL) as falhas,
@@ -352,7 +354,7 @@ def atualizar_snapshot_mercado(perfil_nome):
 
 def get_imoveis(perfil_nome=None, limite=300):
     with get_db() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(row_factory=psycopg_rows.dict_row) as cur:
             q = "SELECT * FROM imoveis"
             p = []
             if perfil_nome: q+=" WHERE perfil_nome=%s"; p.append(perfil_nome)
@@ -381,7 +383,7 @@ def get_stats():
 
 def get_dados_mercado():
     with get_db() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(row_factory=psycopg_rows.dict_row) as cur:
             cur.execute("""
                 SELECT zona, AVG(preco_valor)::INTEGER preco_medio,
                        COUNT(*) total, AVG(preco_m2)::INTEGER preco_m2_medio
@@ -410,7 +412,7 @@ def get_dados_mercado():
 
 def get_visitas(imovel_id=None):
     with get_db() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(row_factory=psycopg_rows.dict_row) as cur:
             if imovel_id:
                 cur.execute("SELECT * FROM visitas WHERE imovel_id=%s ORDER BY data_visita DESC",(imovel_id,))
             else:
@@ -933,7 +935,7 @@ def enviar_resumo_semanal():
     for perfil in PERFIS:
         try:
             with get_db() as conn:
-                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                with conn.cursor(row_factory=psycopg_rows.dict_row) as cur:
                     cur.execute("SELECT * FROM imoveis WHERE perfil_nome=%s AND criado_em>NOW()-INTERVAL '7 days' ORDER BY score DESC",(perfil["nome"],))
                     imoveis=[dict(r) for r in cur.fetchall()]
             if not imoveis: continue
@@ -1185,7 +1187,7 @@ def api_nota():
 @login_required
 def api_imovel_detalhe(iid):
     with get_db() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(row_factory=psycopg_rows.dict_row) as cur:
             cur.execute("SELECT * FROM imoveis WHERE id=%s",(iid,))
             row=cur.fetchone()
     if not row: return jsonify({"erro":"não encontrado"}),404
@@ -1201,7 +1203,7 @@ def api_comparar():
     if len(ids)<2 or len(ids)>3: return jsonify({"erro":"Seleciona 2 ou 3 imóveis"}),400
     imoveis=[]
     with get_db() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(row_factory=psycopg_rows.dict_row) as cur:
             for iid in ids:
                 cur.execute("SELECT * FROM imoveis WHERE id=%s",(iid,))
                 row=cur.fetchone()
@@ -1248,7 +1250,7 @@ def api_exportar_excel():
         try: import openpyxl
         except ImportError: return jsonify({"erro":"openpyxl não instalado"}),500
         with get_db() as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            with conn.cursor(row_factory=psycopg_rows.dict_row) as cur:
                 cur.execute("""
                     SELECT titulo,preco,area_m2,quartos,preco_m2,ano_construcao,
                            zona,fonte,estado,nota,score,link,criado_em
@@ -1281,7 +1283,7 @@ def api_exportar_excel():
 def api_mapa():
     """Imóveis com coordenadas GPS para o mapa."""
     with get_db() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(row_factory=psycopg_rows.dict_row) as cur:
             cur.execute("""
                 SELECT id,titulo,preco,preco_valor,zona,fonte,score,
                        lat,lng,imagem_url,estado,favorito
