@@ -565,22 +565,46 @@ def get_driver():
     if _driver is not None:
         try: _ = _driver.title; return _driver
         except: _driver = None
+    import glob, subprocess
     opts = Options()
     for a in ["--headless=new","--no-sandbox","--disable-dev-shm-usage",
               "--disable-gpu","--disable-setuid-sandbox","--single-process",
-              "--window-size=1920,1080","--disable-blink-features=AutomationControlled"]:
+              "--window-size=1920,1080","--disable-blink-features=AutomationControlled",
+              "--disable-extensions","--no-first-run","--disable-default-apps"]:
         opts.add_argument(a)
     opts.add_argument(f"user-agent={random.choice(USER_AGENTS)}")
     opts.add_experimental_option("excludeSwitches",["enable-automation"])
     opts.add_experimental_option("useAutomationExtension",False)
-    import glob
-    if os.path.exists("/nix/store"):
-        bins=glob.glob("/nix/store/*/bin/chromium") or glob.glob("/nix/store/*/bin/chromium-browser")
-        if bins: opts.binary_location=bins[0]
-        drvs=glob.glob("/nix/store/*/bin/chromedriver")
-        svc=Service(drvs[0]) if drvs else Service(ChromeDriverManager().install())
-    else: svc=Service(ChromeDriverManager().install())
-    _driver=webdriver.Chrome(service=svc,options=opts)
+
+    # Find chromium binary in Nix store
+    chromium_bin = None
+    for pattern in ["/nix/store/*/bin/chromium","/nix/store/*/bin/chromium-browser",
+                    "/usr/bin/chromium","/usr/bin/chromium-browser"]:
+        matches = glob.glob(pattern)
+        if matches:
+            chromium_bin = matches[0]; break
+
+    # Find chromedriver in Nix store
+    chromedriver_bin = None
+    for pattern in ["/nix/store/*/bin/chromedriver","/usr/bin/chromedriver"]:
+        matches = glob.glob(pattern)
+        if matches:
+            chromedriver_bin = matches[0]; break
+
+    if chromium_bin:
+        opts.binary_location = chromium_bin
+        log.info(f"Chromium: {chromium_bin}")
+    else:
+        log.warning("Chromium não encontrado no Nix store!")
+
+    if chromedriver_bin:
+        svc = Service(chromedriver_bin)
+        log.info(f"ChromeDriver: {chromedriver_bin}")
+    else:
+        log.warning("ChromeDriver não encontrado, a usar webdriver-manager")
+        svc = Service(ChromeDriverManager().install())
+
+    _driver = webdriver.Chrome(service=svc, options=opts)
     _driver.set_page_load_timeout(30)
     return _driver
 
