@@ -770,6 +770,27 @@ def paginar_requests(url_tpl, parse_fn):
         except Exception as e: log.error(f"Pag {pag}: {e}"); break
     return todos,pag
 
+def paginar_scraperapi(url_tpl, parse_fn):
+    """Usa ScraperAPI para contornar bloqueios. Fallback para requests se não houver key."""
+    todos=[]; pag=1
+    for pag in range(1,MAX_PAGINAS+1):
+        url=url_tpl.format(page=pag)
+        def _fetch(u=url):
+            if SCRAPERAPI_KEY:
+                api_url=f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={requests.utils.quote(u)}&render=true"
+                r=requests.get(api_url,timeout=45,headers=random_headers())
+            else:
+                r=requests.get(u,headers=random_headers(),timeout=15)
+            return parse_fn(r.text)
+        try:
+            items=com_retry(_fetch)
+            log.info(f"    scraperapi pag {pag}: {len(items)} items")
+            if not items: break
+            todos.extend(items); time.sleep(random.uniform(1,2))
+        except Exception as e:
+            log.error(f"  scraperapi pag {pag}: {e}"); break
+    return todos,pag
+
 def paginar_selenium(url_tpl,parse_fn):
     todos=[]; pag=1
     for pag in range(1,MAX_PAGINAS+1):
@@ -817,7 +838,7 @@ def scrape_idealista(perfil):
                         pt.get_text(strip=True) if pt else "N/D",
                         "Idealista",zl,img.get("src") or img.get("data-src") if img else None))
                 return its
-            items,p=paginar_requests(tpl,parse); res.extend(items); pags+=p
+            items,p=paginar_scraperapi(tpl,parse); res.extend(items); pags+=p
     return res,pags
 
 def scrape_imovirtual(perfil):
@@ -840,7 +861,7 @@ def scrape_imovirtual(perfil):
                         pt.get_text(strip=True) if pt else "N/D",
                         "Imovirtual",zl,img.get("src") or img.get("data-src") if img else None))
                 return its
-            items,p=paginar_requests(tpl,parse); res.extend(items); pags+=p
+            items,p=paginar_scraperapi(tpl,parse); res.extend(items); pags+=p
     return res,pags
 
 def scrape_casasapo(perfil):
@@ -865,7 +886,7 @@ def scrape_casasapo(perfil):
                         pt.get_text(strip=True) if pt else "N/D","Casa SAPO",zl,
                         img.get("src") if img else None))
                 return its
-            items,p=paginar_requests(tpl,parse); res.extend(items); pags+=p
+            items,p=paginar_scraperapi(tpl,parse); res.extend(items); pags+=p
     return res,pags
 
 def scrape_supercasa(perfil):
@@ -890,7 +911,7 @@ def scrape_supercasa(perfil):
                         pt.get_text(strip=True) if pt else "N/D","SuperCasa",zl,
                         img.get("src") if img else None))
                 return its
-            items,p=paginar_requests(tpl,parse); res.extend(items); pags+=p
+            items,p=paginar_scraperapi(tpl,parse); res.extend(items); pags+=p
     return res,pags
 
 def _sel_scrape(url_tpl,base,fonte,zona):
