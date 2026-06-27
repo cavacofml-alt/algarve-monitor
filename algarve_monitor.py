@@ -194,9 +194,93 @@ def init_db():
                     avaliacao   INTEGER CHECK(avaliacao BETWEEN 1 AND 5),
                     criado_em   TIMESTAMP DEFAULT NOW()
                 );
+                CREATE TABLE IF NOT EXISTS perfis_config (
+                    id           SERIAL PRIMARY KEY,
+                    nome         TEXT NOT NULL,
+                    email        TEXT NOT NULL,
+                    ativo        BOOLEAN DEFAULT TRUE,
+                    preco_max    INTEGER DEFAULT 200000,
+                    quartos_min  INTEGER DEFAULT 2,
+                    tipos        TEXT[] DEFAULT ARRAY['apartamentos','moradias-e-vivendas'],
+                    zonas        TEXT[] DEFAULT ARRAY['faro','tavira','olhao','vila-real-de-santo-antonio','castro-marim'],
+                    criado_em    TIMESTAMP DEFAULT NOW(),
+                    atualizado_em TIMESTAMP DEFAULT NOW()
+                );
             """)
         conn.commit()
     log.info("Base de dados v4 inicializada.")
+
+def get_perfis_db():
+    """Lê perfis da base de dados. Se não houver, usa os do código."""
+    try:
+        with get_db() as conn:
+            with conn.cursor(row_factory=psycopg_rows.dict_row) as cur:
+                cur.execute("SELECT * FROM perfis_config WHERE ativo=TRUE ORDER BY id")
+                rows = cur.fetchall()
+                if rows:
+                    return [{
+                        "nome": r["nome"], "email": r["email"],
+                        "preco_max": r["preco_max"], "quartos_min": r["quartos_min"],
+                        "tipos": list(r["tipos"]), "zonas": list(r["zonas"]),
+                        "telegram_chat": "",
+                        "_db_id": r["id"],
+                    } for r in rows]
+    except Exception as e:
+        log.warning(f"get_perfis_db: {e}")
+    return PERFIS  # fallback para perfis do código
+
+def get_todos_perfis_db():
+    """Lê todos os perfis (ativos e inativos)."""
+    try:
+        with get_db() as conn:
+            with conn.cursor(row_factory=psycopg_rows.dict_row) as cur:
+                cur.execute("SELECT * FROM perfis_config ORDER BY id")
+                return [dict(r) for r in cur.fetchall()]
+    except Exception as e:
+        log.warning(f"get_todos_perfis_db: {e}")
+        return []
+
+def criar_perfil_db(nome, email, preco_max, quartos_min, tipos, zonas):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO perfis_config (nome, email, preco_max, quartos_min, tipos, zonas)
+                VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
+            """, (nome, email, preco_max, quartos_min, tipos, zonas))
+            new_id = cur.fetchone()[0]
+        conn.commit()
+    return new_id
+
+def atualizar_perfil_db(pid, nome, email, preco_max, quartos_min, tipos, zonas, ativo):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE perfis_config SET nome=%s, email=%s, preco_max=%s,
+                quartos_min=%s, tipos=%s, zonas=%s, ativo=%s, atualizado_em=NOW()
+                WHERE id=%s
+            """, (nome, email, preco_max, quartos_min, tipos, zonas, ativo, pid))
+        conn.commit()
+
+def apagar_perfil_db(pid):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM perfis_config WHERE id=%s", (pid,))
+        conn.commit()
+
+def sincronizar_perfis_iniciais():
+    """Se não há perfis na DB, copia os do código."""
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM perfis_config")
+                count = cur.fetchone()[0]
+        if count == 0:
+            for p in PERFIS:
+                criar_perfil_db(p["nome"], p["email"], p["preco_max"],
+                    p["quartos_min"], p["tipos"], p["zonas"])
+            log.info(f"Perfis iniciais copiados para a DB ({len(PERFIS)})")
+    except Exception as e:
+        log.warning(f"sincronizar_perfis_iniciais: {e}")
 
 def extrair_preco_valor(p):
     if not p: return None
@@ -382,33 +466,41 @@ def get_stats():
                     "removidos":rem,"reativados":reat,"favoritos":favs}
 
 def get_dados_mercado():
-    with get_db() as conn:
-        with conn.cursor(row_factory=psycopg_rows.dict_row) as cur:
-            cur.execute("""
-                SELECT zona, AVG(preco_valor)::INTEGER preco_medio,
-                       COUNT(*) total, AVG(preco_m2)::INTEGER preco_m2_medio
-                FROM imoveis WHERE disponivel=TRUE AND preco_valor IS NOT NULL
-                GROUP BY zona ORDER BY preco_medio ASC
-            """)
-            por_zona = [dict(r) for r in cur.fetchall()]
-            cur.execute("""
-                SELECT data::TEXT, zona, preco_medio, total_ativos
-                FROM mercado_snapshot WHERE data>CURRENT_DATE-INTERVAL '90 days'
-                ORDER BY data ASC
-            """)
-            evolucao = [dict(r) for r in cur.fetchall()]
-            cur.execute("""
-                SELECT
-                    COUNT(*) FILTER (WHERE preco_valor<100000) ate_100k,
-                    COUNT(*) FILTER (WHERE preco_valor BETWEEN 100000 AND 150000) ate_150k,
-                    COUNT(*) FILTER (WHERE preco_valor BETWEEN 150000 AND 200000) ate_200k,
-                    COUNT(*) FILTER (WHERE preco_valor BETWEEN 200000 AND 300000) ate_300k,
-                    COUNT(*) FILTER (WHERE preco_valor>300000) acima_300k
-                FROM imoveis WHERE disponivel=TRUE AND preco_valor IS NOT NULL
-            """)
-            row=cur.fetchone()
-            dist={"<100k":row[0],"100-150k":row[1],"150-200k":row[2],"200-300k":row[3],">300k":row[4]}
-            return {"por_zona":por_zona,"evolucao":evolucao,"distribuicao":dist}
+    try:
+        with get_db() as conn:
+            with conn.cursor(row_factory=psycopg_rows.dict_row) as cur:
+                cur.execute("""
+                    SELECT zona, AVG(preco_valor)::INTEGER preco_medio,
+                           COUNT(*) total, AVG(preco_m2)::INTEGER preco_m2_medio
+                    FROM imoveis WHERE disponivel=TRUE AND preco_valor IS NOT NULL
+                    GROUP BY zona ORDER BY preco_medio ASC
+                """)
+                por_zona = [dict(r) for r in cur.fetchall()]
+                cur.execute("""
+                    SELECT data::TEXT, zona, preco_medio, total_ativos
+                    FROM mercado_snapshot WHERE data>CURRENT_DATE-INTERVAL '90 days'
+                    ORDER BY data ASC
+                """)
+                evolucao = [dict(r) for r in cur.fetchall()]
+                cur.execute("""
+                    SELECT
+                        COUNT(*) FILTER (WHERE preco_valor<100000) ate_100k,
+                        COUNT(*) FILTER (WHERE preco_valor BETWEEN 100000 AND 150000) ate_150k,
+                        COUNT(*) FILTER (WHERE preco_valor BETWEEN 150000 AND 200000) ate_200k,
+                        COUNT(*) FILTER (WHERE preco_valor BETWEEN 200000 AND 300000) ate_300k,
+                        COUNT(*) FILTER (WHERE preco_valor>300000) acima_300k
+                    FROM imoveis WHERE disponivel=TRUE AND preco_valor IS NOT NULL
+                """)
+                row = cur.fetchone()
+                if row:
+                    dist = {"<100k": row[0] or 0,"100-150k": row[1] or 0,
+                            "150-200k": row[2] or 0,"200-300k": row[3] or 0,">300k": row[4] or 0}
+                else:
+                    dist = {"<100k":0,"100-150k":0,"150-200k":0,"200-300k":0,">300k":0}
+                return {"por_zona": por_zona, "evolucao": evolucao, "distribuicao": dist}
+    except Exception as e:
+        log.error(f"get_dados_mercado: {e}")
+        return {"por_zona":[], "evolucao":[], "distribuicao":{"<100k":0,"100-150k":0,"150-200k":0,"200-300k":0,">300k":0}}
 
 def get_visitas(imovel_id=None):
     with get_db() as conn:
@@ -632,7 +724,7 @@ def quit_driver():
         except: pass
         _driver=None
 
-def selenium_get(url, wait_sel=None, wait_s=8):
+def selenium_get(url, wait_sel=None, wait_s=5):
     d=get_driver()
     try:
         d.get(url)
@@ -653,7 +745,7 @@ def com_retry(fn,n=3,w=5):
 # HELPERS / SCRAPERS
 # ============================================================
 
-MAX_PAGINAS = 5
+MAX_PAGINAS = 2  # max 2 páginas por zona
 
 def fazer_item(link,titulo,preco,fonte,zona,img=None):
     pv=extrair_preco_valor(preco)
@@ -678,20 +770,14 @@ def paginar_requests(url_tpl, parse_fn):
         except Exception as e: log.error(f"Pag {pag}: {e}"); break
     return todos,pag
 
-def paginar_selenium(url_tpl, parse_fn, wait_sel="article, .property, .listing, [class*='card']", wait_s=10):
-    todos = []; pag = 1
-    for pag in range(1, MAX_PAGINAS+1):
-        url = url_tpl.format(page=pag)
-        try:
-            html = selenium_get(url, wait_sel=wait_sel, wait_s=wait_s)
-            items = parse_fn(html)
-            log.debug(f"  pagina {pag}: {len(items)} items")
-            if not items: break
-            todos.extend(items)
-            time.sleep(random.uniform(2, 4))
-        except Exception as e:
-            log.error(f"  paginar_selenium pag {pag}: {e}"); break
-    return todos, pag
+def paginar_selenium(url_tpl,parse_fn):
+    todos=[]; pag=1
+    for pag in range(1,MAX_PAGINAS+1):
+        html=selenium_get(url_tpl.format(page=pag),wait_sel="article,.property,.listing,h2,h3",wait_s=5)
+        items=parse_fn(html)
+        if not items: break
+        todos.extend(items); time.sleep(random.uniform(2,4))
+    return todos,pag
 
 def _parse_generic(html,base,fonte,zona):
     soup=BeautifulSoup(html,"html.parser"); items=[]
@@ -712,110 +798,100 @@ def _parse_generic(html,base,fonte,zona):
         if found: break
     return items
 
-def _parse_idealista(html, tl, zl):
-    soup = BeautifulSoup(html, "html.parser"); its = []
-    for it in soup.select("article.item"):
-        lt = it.select_one("a.item-link"); pt = it.select_one(".item-price")
-        tt = it.select_one(".item-title"); img = it.select_one("img")
-        if not lt: continue
-        its.append(fazer_item("https://www.idealista.pt" + lt.get("href",""),
-            tt.get_text(strip=True) if tt else tl,
-            pt.get_text(strip=True) if pt else "N/D",
-            "Idealista", zl, img.get("src") or img.get("data-src") if img else None))
-    return its
-
 def scrape_idealista(perfil):
-    res = []; pags = 0
+    res=[]; pags=0
     for ts in perfil["tipos"]:
-        tl = {"apartamentos":"Apartamento","moradias-e-vivendas":"Moradia"}.get(ts,ts)
+        tl={"apartamentos":"Apartamento","moradias-e-vivendas":"Moradia"}.get(ts,ts)
         for zs in perfil["zonas"]:
-            zl = TODAS_AS_ZONAS.get(zs,zs)
-            tpl = (f"https://www.idealista.pt/comprar-{ts}/{zs}-faro/"
-                   f"?preco-maximo={perfil['preco_max']}&quartos-min={perfil['quartos_min']}&pagina={{page}}")
-            items, p = paginar_selenium(tpl, lambda html, tl=tl, zl=zl: _parse_idealista(html, tl, zl))
-            res.extend(items); pags += p
-    return res, pags
-
-def _parse_imovirtual(html, tl, zl):
-    soup = BeautifulSoup(html, "html.parser"); its = []
-    for it in soup.select("article[data-cy='listing-item']"):
-        lt = it.select_one("a"); pt = it.select_one("[data-cy='listing-item-price']")
-        tt = it.select_one("[data-cy='listing-item-title']"); img = it.select_one("img")
-        if not lt: continue
-        its.append(fazer_item("https://www.imovirtual.com" + lt.get("href",""),
-            tt.get_text(strip=True) if tt else tl,
-            pt.get_text(strip=True) if pt else "N/D",
-            "Imovirtual", zl, img.get("src") or img.get("data-src") if img else None))
-    return its
+            zl=TODAS_AS_ZONAS.get(zs,zs)
+            tpl=(f"https://www.idealista.pt/comprar-{ts}/{zs}-faro/"
+                 f"?preco-maximo={perfil['preco_max']}&quartos-min={perfil['quartos_min']}&pagina={{page}}")
+            def parse(html,tl=tl,zl=zl):
+                soup=BeautifulSoup(html,"html.parser"); its=[]
+                for it in soup.select("article.item"):
+                    lt=it.select_one("a.item-link"); pt=it.select_one(".item-price")
+                    tt=it.select_one(".item-title"); img=it.select_one("img")
+                    if not lt: continue
+                    its.append(fazer_item("https://www.idealista.pt"+lt.get("href",""),
+                        tt.get_text(strip=True) if tt else tl,
+                        pt.get_text(strip=True) if pt else "N/D",
+                        "Idealista",zl,img.get("src") or img.get("data-src") if img else None))
+                return its
+            items,p=paginar_requests(tpl,parse); res.extend(items); pags+=p
+    return res,pags
 
 def scrape_imovirtual(perfil):
-    res = []; pags = 0
+    res=[]; pags=0
     for ts in perfil["tipos"]:
-        tl = {"apartamentos":"Apartamento","moradias-e-vivendas":"Moradia"}.get(ts,ts)
-        tiv = "apartamento" if "apart" in ts else "moradia"
+        tl={"apartamentos":"Apartamento","moradias-e-vivendas":"Moradia"}.get(ts,ts)
+        tiv="apartamento" if "apart" in ts else "moradia"
         for zs in perfil["zonas"]:
-            zl = TODAS_AS_ZONAS.get(zs,zs)
-            tpl = (f"https://www.imovirtual.com/{zs}/comprar/{tiv}/"
-                   f"?priceMax={perfil['preco_max']}&roomsMin={perfil['quartos_min']}&page={{page}}")
-            items, p = paginar_selenium(tpl, lambda html, tl=tl, zl=zl: _parse_imovirtual(html, tl, zl))
-            res.extend(items); pags += p
-    return res, pags
-
-def _parse_casasapo(html, tl, zl):
-    soup = BeautifulSoup(html, "html.parser"); its = []
-    for it in soup.select(".property-info-content,.searchResultProperty,.card-property"):
-        lt = it.select_one("a"); pt = it.select_one(".property-price,.price,[class*='price']")
-        tt = it.select_one(".property-title,h2,h3"); img = it.select_one("img")
-        if not lt: continue
-        href = lt.get("href","")
-        link = href if href.startswith("http") else "https://casa.sapo.pt" + href
-        its.append(fazer_item(link,
-            tt.get_text(strip=True) if tt else tl,
-            pt.get_text(strip=True) if pt else "N/D",
-            "Casa SAPO", zl, img.get("src") if img else None))
-    return its
+            zl=TODAS_AS_ZONAS.get(zs,zs)
+            tpl=(f"https://www.imovirtual.com/{zs}/comprar/{tiv}/"
+                 f"?priceMax={perfil['preco_max']}&roomsMin={perfil['quartos_min']}&page={{page}}")
+            def parse(html,tl=tl,zl=zl):
+                soup=BeautifulSoup(html,"html.parser"); its=[]
+                for it in soup.select("article[data-cy='listing-item']"):
+                    lt=it.select_one("a"); pt=it.select_one("[data-cy='listing-item-price']")
+                    tt=it.select_one("[data-cy='listing-item-title']"); img=it.select_one("img")
+                    if not lt: continue
+                    its.append(fazer_item("https://www.imovirtual.com"+lt.get("href",""),
+                        tt.get_text(strip=True) if tt else tl,
+                        pt.get_text(strip=True) if pt else "N/D",
+                        "Imovirtual",zl,img.get("src") or img.get("data-src") if img else None))
+                return its
+            items,p=paginar_requests(tpl,parse); res.extend(items); pags+=p
+    return res,pags
 
 def scrape_casasapo(perfil):
-    res = []; pags = 0
+    res=[]; pags=0
     for ts in perfil["tipos"]:
-        tl = {"apartamentos":"Apartamento","moradias-e-vivendas":"Moradia"}.get(ts,ts)
-        tsk = "apartamentos" if "apart" in ts else "moradias"
+        tl={"apartamentos":"Apartamento","moradias-e-vivendas":"Moradia"}.get(ts,ts)
+        tsk="apartamentos" if "apart" in ts else "moradias"
         for zs in perfil["zonas"]:
-            zl = TODAS_AS_ZONAS.get(zs,zs)
-            tips = ",".join([f"T{i}" for i in range(perfil["quartos_min"],7)])
-            tpl = (f"https://casa.sapo.pt/comprar-{tsk}/{zs}/"
-                   f"?precomax={perfil['preco_max']}&tipologia={tips}&pn={{page}}")
-            items, p = paginar_selenium(tpl, lambda html, tl=tl, zl=zl: _parse_casasapo(html, tl, zl))
-            res.extend(items); pags += p
-    return res, pags
-
-def _parse_supercasa(html, tl, zl):
-    soup = BeautifulSoup(html, "html.parser"); its = []
-    for it in soup.select("[data-id],.property-item,article,.listing-item"):
-        lt = it.select_one("a"); pt = it.select_one(".price,[class*='price'],[class*='Price']")
-        tt = it.select_one("h2,h3,[class*='title'],[class*='Title']"); img = it.select_one("img")
-        if not lt: continue
-        href = lt.get("href","")
-        link = href if href.startswith("http") else "https://supercasa.pt" + href
-        its.append(fazer_item(link,
-            tt.get_text(strip=True) if tt else tl,
-            pt.get_text(strip=True) if pt else "N/D",
-            "SuperCasa", zl, img.get("src") if img else None))
-    return its
+            zl=TODAS_AS_ZONAS.get(zs,zs)
+            tips=",".join([f"T{i}" for i in range(perfil["quartos_min"],7)])
+            tpl=(f"https://casa.sapo.pt/comprar-{tsk}/{zs}/"
+                 f"?precomax={perfil['preco_max']}&tipologia={tips}&pn={{page}}")
+            def parse(html,tl=tl,zl=zl):
+                soup=BeautifulSoup(html,"html.parser"); its=[]
+                for it in soup.select(".property-info-content,.searchResultProperty"):
+                    lt=it.select_one("a"); pt=it.select_one(".property-price,.price")
+                    tt=it.select_one(".property-title,h2"); img=it.select_one("img")
+                    if not lt: continue
+                    href=lt.get("href","")
+                    link=href if href.startswith("http") else "https://casa.sapo.pt"+href
+                    its.append(fazer_item(link,tt.get_text(strip=True) if tt else tl,
+                        pt.get_text(strip=True) if pt else "N/D","Casa SAPO",zl,
+                        img.get("src") if img else None))
+                return its
+            items,p=paginar_requests(tpl,parse); res.extend(items); pags+=p
+    return res,pags
 
 def scrape_supercasa(perfil):
-    res = []; pags = 0
+    res=[]; pags=0
     for ts in perfil["tipos"]:
-        tl = {"apartamentos":"Apartamento","moradias-e-vivendas":"Moradia"}.get(ts,ts)
-        tsc = "apartamentos" if "apart" in ts else "moradias"
+        tl={"apartamentos":"Apartamento","moradias-e-vivendas":"Moradia"}.get(ts,ts)
+        tsc="apartamentos" if "apart" in ts else "moradias"
         for zs in perfil["zonas"]:
-            zl = TODAS_AS_ZONAS.get(zs,zs)
-            tips = ",".join([f"T{i}" for i in range(perfil["quartos_min"],6)])
-            tpl = (f"https://supercasa.pt/comprar-{tsc}/{zs}/"
-                   f"?preco-max={perfil['preco_max']}&tipologia={tips}&pagina={{page}}")
-            items, p = paginar_selenium(tpl, lambda html, tl=tl, zl=zl: _parse_supercasa(html, tl, zl))
-            res.extend(items); pags += p
-    return res, pags
+            zl=TODAS_AS_ZONAS.get(zs,zs)
+            tips=",".join([f"T{i}" for i in range(perfil["quartos_min"],6)])
+            tpl=(f"https://supercasa.pt/comprar-{tsc}/{zs}/"
+                 f"?preco-max={perfil['preco_max']}&tipologia={tips}&pagina={{page}}")
+            def parse(html,tl=tl,zl=zl):
+                soup=BeautifulSoup(html,"html.parser"); its=[]
+                for it in soup.select("[data-id],.property-item,article"):
+                    lt=it.select_one("a"); pt=it.select_one(".price,[class*='price']")
+                    tt=it.select_one("h2,h3,[class*='title']"); img=it.select_one("img")
+                    if not lt: continue
+                    href=lt.get("href","")
+                    link=href if href.startswith("http") else "https://supercasa.pt"+href
+                    its.append(fazer_item(link,tt.get_text(strip=True) if tt else tl,
+                        pt.get_text(strip=True) if pt else "N/D","SuperCasa",zl,
+                        img.get("src") if img else None))
+                return its
+            items,p=paginar_requests(tpl,parse); res.extend(items); pags+=p
+    return res,pags
 
 def _sel_scrape(url_tpl,base,fonte,zona):
     return paginar_selenium(url_tpl, lambda html: _parse_generic(html,base,fonte,zona))
@@ -1059,7 +1135,9 @@ def verificar():
     log.info("="*55)
     log.info(f"Verificação: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
     log.info("="*55)
-    for p in PERFIS: verificar_perfil(p)
+    perfis_ativos = get_perfis_db()
+    log.info(f"{len(perfis_ativos)} perfil(is) ativo(s)")
+    for p in perfis_ativos: verificar_perfil(p)
     verificar_scrapers_com_falha()
     log.info("Ronda concluída."); quit_driver()
 
@@ -1206,8 +1284,12 @@ def api_stats():
 @app.route("/api/mercado")
 @login_required
 def api_mercado():
-    try: return jsonify(get_dados_mercado())
-    except Exception as e: return jsonify({"erro":str(e)}),500
+    try:
+        dados = get_dados_mercado()
+        return jsonify(dados)
+    except Exception as e:
+        log.error(f"api_mercado: {e}")
+        return jsonify({"por_zona":[],"evolucao":[],"distribuicao":{}}), 200
 
 @app.route("/api/imovel/favorito", methods=["POST"])
 @login_required
@@ -1362,6 +1444,81 @@ def api_push_subscribe():
         return jsonify({"ok":True})
     except Exception as e: return jsonify({"erro":str(e)}),500
 
+@app.route("/api/perfis", methods=["GET"])
+@login_required
+def api_perfis_get():
+    try:
+        perfis = get_todos_perfis_db()
+        for p in perfis:
+            for k in ["criado_em","atualizado_em"]:
+                if p.get(k): p[k] = str(p[k])
+        return jsonify(perfis)
+    except Exception as e:
+        return jsonify({"erro":str(e)}),500
+
+@app.route("/api/perfis", methods=["POST"])
+@login_required
+def api_perfis_criar():
+    try:
+        d = request.get_json()
+        pid = criar_perfil_db(
+            d["nome"], d["email"],
+            int(d.get("preco_max",200000)), int(d.get("quartos_min",2)),
+            d.get("tipos",["apartamentos","moradias-e-vivendas"]),
+            d.get("zonas",["faro","tavira","olhao","vila-real-de-santo-antonio","castro-marim"])
+        )
+        return jsonify({"ok":True,"id":pid})
+    except Exception as e:
+        return jsonify({"erro":str(e)}),500
+
+@app.route("/api/perfis/<int:pid>", methods=["PUT"])
+@login_required
+def api_perfis_atualizar(pid):
+    try:
+        d = request.get_json()
+        atualizar_perfil_db(
+            pid, d["nome"], d["email"],
+            int(d.get("preco_max",200000)), int(d.get("quartos_min",2)),
+            d.get("tipos",["apartamentos","moradias-e-vivendas"]),
+            d.get("zonas",["faro","tavira","olhao"]),
+            d.get("ativo",True)
+        )
+        return jsonify({"ok":True})
+    except Exception as e:
+        return jsonify({"erro":str(e)}),500
+
+@app.route("/api/perfis/<int:pid>", methods=["DELETE"])
+@login_required
+def api_perfis_apagar(pid):
+    try:
+        apagar_perfil_db(pid)
+        return jsonify({"ok":True})
+    except Exception as e:
+        return jsonify({"erro":str(e)}),500
+
+@app.route("/api/perfis/teste-email", methods=["POST"])
+@login_required
+def api_teste_email():
+    try:
+        d = request.get_json()
+        email_dest = d.get("email", EMAIL_DESTINATARIO)
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = "✅ Teste — Monitor Imóveis Algarve"
+        msg["From"] = EMAIL_REMETENTE
+        msg["To"] = email_dest
+        msg.attach(MIMEText(f"""
+        <html><body style="font-family:Arial,sans-serif;padding:20px">
+        <h2 style="color:#0f2942">✅ Email de teste enviado com sucesso!</h2>
+        <p>O Monitor de Imóveis está configurado corretamente.</p>
+        <p style="color:#888;font-size:12px">{datetime.now().strftime('%d/%m/%Y %H:%M')}</p>
+        </body></html>""", "html"))
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+            smtp.login(EMAIL_REMETENTE, EMAIL_PASSWORD)
+            smtp.sendmail(EMAIL_REMETENTE, email_dest, msg.as_string())
+        return jsonify({"ok":True})
+    except Exception as e:
+        return jsonify({"erro":str(e)}),500
+
 @app.route("/health")
 def health(): return jsonify({"status":"ok","ts":datetime.now().isoformat()})
 
@@ -1373,7 +1530,9 @@ if __name__=="__main__":
     log.info("╔══════════════════════════════════════════════════╗")
     log.info("║   Monitor de Imóveis — Algarve  v4.0             ║")
     log.info("╚══════════════════════════════════════════════════╝")
-    if DATABASE_URL: init_db()
+    if DATABASE_URL:
+        init_db()
+        sincronizar_perfis_iniciais()
     else: log.warning("DATABASE_URL não definida!")
     log.info(f"Login: {DASHBOARD_USERNAME} / {DASHBOARD_PASSWORD}")
     log.info(f"{len(SCRAPERS)} fontes | {len(PERFIS)} perfil(is) | cada {INTERVALO_HORAS}h")

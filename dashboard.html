@@ -174,6 +174,7 @@
   <div class="tab" onclick="showTab('mapa')">🗺️ Mapa</div>
   <div class="tab" onclick="showTab('mercado')">📊 Mercado</div>
   <div class="tab" onclick="showTab('visitas')">📅 Visitas</div>
+  <div class="tab" onclick="showTab('config')">⚙️ Configuração</div>
 </div>
 
 <!-- IMÓVEIS -->
@@ -222,6 +223,15 @@
   </div>
 </div>
 
+<!-- CONFIGURAÇÃO -->
+<div id="tab-config" class="page">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+    <h2 style="font-size:18px;color:var(--navy)">⚙️ Perfis de Pesquisa</h2>
+    <button onclick="abrirModalNovoPerfil()" style="padding:9px 18px;background:var(--navy);color:white;border:none;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer">+ Novo Perfil</button>
+  </div>
+  <div id="perfis-list"><div class="empty">A carregar...</div></div>
+</div>
+
 <!-- VISITAS -->
 <div id="tab-visitas" class="page">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
@@ -263,6 +273,17 @@
   </div>
 </div>
 
+<!-- MODAL PERFIL -->
+<div class="modal-bg" id="modal-perfil">
+  <div class="modal" style="max-width:560px">
+    <div class="modal-header">
+      <h2 id="modal-perfil-titulo">Novo Perfil</h2>
+      <button class="btn-close" onclick="fecharModal('modal-perfil')">✕</button>
+    </div>
+    <div id="modal-perfil-body"></div>
+  </div>
+</div>
+
 <!-- MODAL VISITA -->
 <div class="modal-bg" id="modal-visita">
   <div class="modal" style="max-width:420px">
@@ -282,13 +303,14 @@ let todos=[], comparar_ids=[], mapaIniciado=false, chartsRendered=false;
 // ── TABS ──────────────────────────────────────────────────
 function showTab(name){
   document.querySelectorAll('.tab').forEach((t,i)=>{
-    t.classList.toggle('active',['imoveis','mapa','mercado','visitas'][i]===name);
+    t.classList.toggle('active',['imoveis','mapa','mercado','visitas','config'][i]===name);
   });
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById('tab-'+name).classList.add('active');
   if(name==='mapa' && !mapaIniciado) iniciarMapa();
   if(name==='mercado' && !chartsRendered) carregarMercado();
   if(name==='visitas') carregarVisitas();
+  if(name==='config') carregarConfig();
 }
 
 // ── CARREGAR DADOS ────────────────────────────────────────
@@ -641,6 +663,160 @@ document.addEventListener('keydown',e=>{ if(e.key==='Escape') document.querySele
 // ── INIT ──────────────────────────────────────────────────
 carregar();
 setInterval(carregar, 60000);
+
+// ── CONFIG / PERFIS ───────────────────────────────────────
+const TODAS_ZONAS = {
+    "faro":"Faro","tavira":"Tavira","olhao":"Olhão",
+    "vila-real-de-santo-antonio":"VRSA","castro-marim":"Castro Marim",
+    "lagos":"Lagos","portimao":"Portimão","silves":"Silves",
+    "aljezur":"Aljezur","albufeira":"Albufeira",
+    "lagoa-algarve":"Lagoa","loul":"Loulé","monchique":"Monchique"
+};
+const TIPOS_DISPONIVEIS = [
+  {slug:"apartamentos", label:"Apartamento"},
+  {slug:"moradias-e-vivendas", label:"Moradia/Vivenda"}
+];
+
+async function carregarConfig(){
+  const perfis = await fetch('/api/perfis').then(r=>r.json());
+  const el = document.getElementById('perfis-list');
+  if(!perfis.length){
+    el.innerHTML='<div class="empty">Nenhum perfil configurado. Cria um novo.</div>'; return;
+  }
+  el.innerHTML = perfis.map(p=>`
+    <div style="background:white;border-radius:10px;padding:20px;margin-bottom:14px;box-shadow:var(--s);border-left:4px solid ${p.ativo?'var(--lime)':'var(--g200)'}">
+      <div style="display:flex;justify-content:space-between;align-items:start;flex-wrap:wrap;gap:10px">
+        <div>
+          <div style="font-size:16px;font-weight:700;color:var(--navy)">${p.nome}</div>
+          <div style="font-size:13px;color:var(--g600);margin-top:3px">📧 ${p.email}</div>
+          <div style="font-size:12px;color:var(--g400);margin-top:3px">
+            💰 Até ${(p.preco_max||0).toLocaleString('pt-PT')}€ &nbsp;·&nbsp;
+            🛏 T${p.quartos_min}+ &nbsp;·&nbsp;
+            📍 ${(p.zonas||[]).map(z=>TODAS_ZONAS[z]||z).join(', ')}
+          </div>
+          <div style="font-size:12px;color:var(--g400);margin-top:2px">
+            🏡 ${(p.tipos||[]).map(t=>t==='apartamentos'?'Apartamento':'Moradia').join(', ')}
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button onclick="testarEmail(${p.id},'${p.email}')" style="padding:6px 12px;background:var(--ocean);color:white;border:none;border-radius:6px;font-size:12px;cursor:pointer">📧 Testar Email</button>
+          <button onclick="editarPerfil(${p.id})" style="padding:6px 12px;background:var(--navy);color:white;border:none;border-radius:6px;font-size:12px;cursor:pointer">✏️ Editar</button>
+          <button onclick="togglePerfil(${p.id},${!p.ativo})" style="padding:6px 12px;background:${p.ativo?'var(--amber)':'var(--lime)'};color:white;border:none;border-radius:6px;font-size:12px;cursor:pointer">${p.ativo?'⏸ Pausar':'▶ Ativar'}</button>
+          <button onclick="apagarPerfil(${p.id})" style="padding:6px 12px;background:var(--red);color:white;border:none;border-radius:6px;font-size:12px;cursor:pointer">🗑 Apagar</button>
+        </div>
+      </div>
+    </div>`).join('');
+}
+
+function renderFormPerfil(p={}){
+  const zonaChecks = Object.entries(TODAS_ZONAS).map(([slug,label])=>`
+    <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:4px;cursor:pointer">
+      <input type="checkbox" name="zona" value="${slug}" ${(p.zonas||['faro','tavira','olhao','vila-real-de-santo-antonio','castro-marim']).includes(slug)?'checked':''}>
+      ${label}
+    </label>`).join('');
+  const tipoChecks = TIPOS_DISPONIVEIS.map(t=>`
+    <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:4px;cursor:pointer">
+      <input type="checkbox" name="tipo" value="${t.slug}" ${(p.tipos||['apartamentos','moradias-e-vivendas']).includes(t.slug)?'checked':''}>
+      ${t.label}
+    </label>`).join('');
+  return `
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div>
+        <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px">Nome do perfil</label>
+        <input id="pf-nome" value="${p.nome||''}" placeholder="Ex: Sotavento T2 até 200k"
+          style="width:100%;padding:9px;border:1px solid var(--g200);border-radius:7px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px">Email para alertas</label>
+        <input id="pf-email" type="email" value="${p.email||''}" placeholder="email@gmail.com"
+          style="width:100%;padding:9px;border:1px solid var(--g200);border-radius:7px;font-size:13px">
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+        <div>
+          <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px">Preço máximo (€)</label>
+          <input id="pf-preco" type="number" value="${p.preco_max||200000}" min="50000" max="2000000" step="5000"
+            style="width:100%;padding:9px;border:1px solid var(--g200);border-radius:7px;font-size:13px">
+        </div>
+        <div>
+          <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px">Quartos mínimos</label>
+          <select id="pf-quartos" style="width:100%;padding:9px;border:1px solid var(--g200);border-radius:7px;font-size:13px">
+            ${[1,2,3,4,5].map(n=>`<option value="${n}" ${(p.quartos_min||2)===n?'selected':''}>${'T'+n}+</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div>
+        <label style="font-size:13px;font-weight:600;display:block;margin-bottom:8px">Tipo de imóvel</label>
+        <div style="display:flex;gap:20px">${tipoChecks}</div>
+      </div>
+      <div>
+        <label style="font-size:13px;font-weight:600;display:block;margin-bottom:8px">Zonas</label>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px">${zonaChecks}</div>
+      </div>
+      <button onclick="guardarPerfil(${p.id||0})" style="padding:11px;background:var(--navy);color:white;border:none;border-radius:7px;font-size:14px;font-weight:600;cursor:pointer;margin-top:4px">
+        ${p.id?'💾 Guardar alterações':'✅ Criar perfil'}
+      </button>
+    </div>`;
+}
+
+function abrirModalNovoPerfil(){
+  document.getElementById('modal-perfil-titulo').textContent = 'Novo Perfil';
+  document.getElementById('modal-perfil-body').innerHTML = renderFormPerfil();
+  document.getElementById('modal-perfil').classList.add('open');
+}
+
+async function editarPerfil(id){
+  const perfis = await fetch('/api/perfis').then(r=>r.json());
+  const p = perfis.find(x=>x.id===id);
+  if(!p) return;
+  document.getElementById('modal-perfil-titulo').textContent = 'Editar Perfil';
+  document.getElementById('modal-perfil-body').innerHTML = renderFormPerfil(p);
+  document.getElementById('modal-perfil').classList.add('open');
+}
+
+async function guardarPerfil(id){
+  const nome    = document.getElementById('pf-nome').value.trim();
+  const email   = document.getElementById('pf-email').value.trim();
+  const preco   = parseInt(document.getElementById('pf-preco').value);
+  const quartos = parseInt(document.getElementById('pf-quartos').value);
+  const tipos   = [...document.querySelectorAll('input[name="tipo"]:checked')].map(i=>i.value);
+  const zonas   = [...document.querySelectorAll('input[name="zona"]:checked')].map(i=>i.value);
+  if(!nome||!email) return alert('Nome e email são obrigatórios.');
+  if(!tipos.length) return alert('Seleciona pelo menos um tipo de imóvel.');
+  if(!zonas.length) return alert('Seleciona pelo menos uma zona.');
+  const body = {nome, email, preco_max:preco, quartos_min:quartos, tipos, zonas, ativo:true};
+  const url  = id ? `/api/perfis/${id}` : '/api/perfis';
+  const meth = id ? 'PUT' : 'POST';
+  const r = await fetch(url,{method:meth,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d = await r.json();
+  if(d.erro) return alert('Erro: '+d.erro);
+  fecharModal('modal-perfil');
+  carregarConfig();
+}
+
+async function togglePerfil(id, ativo){
+  const perfis = await fetch('/api/perfis').then(r=>r.json());
+  const p = perfis.find(x=>x.id===id);
+  if(!p) return;
+  await fetch(`/api/perfis/${id}`,{method:'PUT',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({...p, ativo})});
+  carregarConfig();
+}
+
+async function apagarPerfil(id){
+  if(!confirm('Tens a certeza que queres apagar este perfil? Os imóveis encontrados não são apagados.')) return;
+  await fetch(`/api/perfis/${id}`,{method:'DELETE'});
+  carregarConfig();
+}
+
+async function testarEmail(id, email){
+  const btn = event.target;
+  btn.textContent='⏳ A enviar...'; btn.disabled=true;
+  const r = await fetch('/api/perfis/teste-email',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({email})});
+  const d = await r.json();
+  btn.textContent = d.ok ? '✅ Enviado!' : '❌ Erro';
+  setTimeout(()=>{ btn.textContent='📧 Testar Email'; btn.disabled=false; }, 3000);
+}
 </script>
 </body>
 </html>
