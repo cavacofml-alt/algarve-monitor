@@ -1,11 +1,8 @@
 [phases.setup]
-nixPkgs = ["chromium", "chromedriver", "libpq", "gcc", "python313Packages.pip"]
+nixPkgs = ["chromium", "chromedriver", "python311", "python311Packages.pip", "libpq"]
 
 [phases.install]
-cmds = [
-  "pip install --no-binary psycopg2 psycopg2 || pip install psycopg2-binary",
-  "pip install -r requirements.txt --ignore-installed psycopg2-binary"
-]
+cmds = ["python3.11 -m pip install -r requirements.txt"]
 
 [start]
-cmd = "python algarve_monitor.py"
+cmd = "python3.11 algarve_monitor.py"
