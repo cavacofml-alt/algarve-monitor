@@ -576,31 +576,37 @@ def get_driver():
     opts.add_experimental_option("excludeSwitches",["enable-automation"])
     opts.add_experimental_option("useAutomationExtension",False)
 
-    # Find chromium/chrome binary — apt installs to /usr/bin
-    chromium_bin = None
-    for path in ["/usr/bin/chromium", "/usr/bin/chromium-browser",
-                 "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable"]:
-        if os.path.exists(path):
-            chromium_bin = path; break
+    import subprocess
+    # Check env vars first (set by Dockerfile)
+    chromium_bin = os.getenv("CHROME_BIN")
+    chromedriver_bin = os.getenv("CHROMEDRIVER_BIN")
 
-    # Try nix store as fallback
-    if not chromium_bin:
-        for pattern in ["/nix/store/*/bin/chromium","/nix/store/*/bin/chromium-browser"]:
-            matches = glob.glob(pattern)
-            if matches:
-                chromium_bin = matches[0]; break
+    # Auto-detect if not set
+    if not chromium_bin or not os.path.exists(chromium_bin):
+        chromium_bin = None
+        for path in ["/usr/bin/chromium", "/usr/bin/chromium-browser",
+                     "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable"]:
+            if os.path.exists(path):
+                chromium_bin = path; break
+        if not chromium_bin:
+            for pattern in ["/nix/store/*/bin/chromium","/nix/store/*/bin/chromium-browser"]:
+                matches = glob.glob(pattern)
+                if matches: chromium_bin = matches[0]; break
+        if not chromium_bin:
+            try:
+                result = subprocess.run(["which","chromium"], capture_output=True, text=True)
+                if result.returncode == 0: chromium_bin = result.stdout.strip()
+            except: pass
 
-    # Find chromedriver
-    chromedriver_bin = None
-    for path in ["/usr/bin/chromedriver", "/usr/bin/chromium-driver"]:
-        if os.path.exists(path):
-            chromedriver_bin = path; break
-
-    if not chromedriver_bin:
-        for pattern in ["/nix/store/*/bin/chromedriver"]:
-            matches = glob.glob(pattern)
-            if matches:
-                chromedriver_bin = matches[0]; break
+    if not chromedriver_bin or not os.path.exists(chromedriver_bin):
+        chromedriver_bin = None
+        for path in ["/usr/bin/chromedriver", "/usr/bin/chromium-driver"]:
+            if os.path.exists(path):
+                chromedriver_bin = path; break
+        if not chromedriver_bin:
+            for pattern in ["/nix/store/*/bin/chromedriver"]:
+                matches = glob.glob(pattern)
+                if matches: chromedriver_bin = matches[0]; break
 
     if chromium_bin:
         opts.binary_location = chromium_bin

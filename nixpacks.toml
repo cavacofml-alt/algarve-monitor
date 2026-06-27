@@ -1,8 +1,15 @@
 [phases.setup]
-aptPkgs = ["chromium", "chromium-driver"]
+nixPkgs = ["python311", "pip", "chromium", "chromedriver", "gcc", "libgcc"]
 
 [phases.install]
-cmds = ["pip install -r requirements.txt"]
+cmds = [
+  "pip install -r requirements.txt",
+  "echo 'Chromium path:' && which chromium || echo 'not in PATH'",
+  "find /nix -name 'chromium' -type f 2>/dev/null | head -5 || true"
+]
 
 [start]
 cmd = "python algarve_monitor.py"
+
+[variables]
+NIXPKGS_ALLOW_UNFREE = "1"
