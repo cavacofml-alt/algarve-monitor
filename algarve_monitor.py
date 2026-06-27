@@ -1370,3 +1370,4 @@ if __name__=="__main__":
     log.info("A monitorizar. Ctrl+C para parar.\n")
     while True: schedule.run_pending(); time.sleep(60)
 "# v4.1" 
+"# v4.1" 
