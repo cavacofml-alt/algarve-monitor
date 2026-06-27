@@ -825,8 +825,12 @@ def scrape_idealista(perfil):
         tl={"apartamentos":"Apartamento","moradias-e-vivendas":"Moradia"}.get(ts,ts)
         for zs in perfil["zonas"]:
             zl=TODAS_AS_ZONAS.get(zs,zs)
-            tpl=(f"https://www.idealista.pt/comprar-{ts}/{zs}-faro/"
-                 f"?preco-maximo={perfil['preco_max']}&quartos-min={perfil['quartos_min']}&pagina={{page}}")
+            # Idealista PT URL format: /comprar-casas/{zona}/com-{tipo},t{q}/
+            # Idealista PT: com-apartamentos ou com-moradias (sem "e-vivendas")
+            tipo_slug = "apartamentos" if "apart" in ts else "moradias"
+            filtro_tipo = f"com-{tipo_slug}"
+            tpl=(f"https://www.idealista.pt/comprar-casas/{zs}/{filtro_tipo}/"
+                 f"?preco-max={perfil['preco_max']}&quartos-min={perfil['quartos_min']}&pagina={{page}}")
             def parse(html,tl=tl,zl=zl):
                 soup=BeautifulSoup(html,"html.parser"); its=[]
                 for it in soup.select("article.item"):
@@ -848,8 +852,9 @@ def scrape_imovirtual(perfil):
         tiv="apartamento" if "apart" in ts else "moradia"
         for zs in perfil["zonas"]:
             zl=TODAS_AS_ZONAS.get(zs,zs)
-            tpl=(f"https://www.imovirtual.com/{zs}/comprar/{tiv}/"
-                 f"?priceMax={perfil['preco_max']}&roomsMin={perfil['quartos_min']}&page={{page}}")
+            # Imovirtual URL format (apartamento/moradia before zona)
+            tpl=(f"https://www.imovirtual.com/comprar/{tiv}/{zs}/"
+                 f"?priceMax={perfil['preco_max']}&roomsMin={perfil['quartos_min']}&nrAdsPerPage=36&page={{page}}")
             def parse(html,tl=tl,zl=zl):
                 soup=BeautifulSoup(html,"html.parser"); its=[]
                 for it in soup.select("article[data-cy='listing-item']"):
@@ -897,8 +902,10 @@ def scrape_supercasa(perfil):
         for zs in perfil["zonas"]:
             zl=TODAS_AS_ZONAS.get(zs,zs)
             tips=",".join([f"T{i}" for i in range(perfil["quartos_min"],6)])
-            tpl=(f"https://supercasa.pt/comprar-{tsc}/{zs}/"
-                 f"?preco-max={perfil['preco_max']}&tipologia={tips}&pagina={{page}}")
+            # SuperCasa URL: /comprar-casas/{zona}/com-apartamentos ou com-moradias
+            tipo_sc2 = "apartamentos" if "apart" in ts else "moradias"
+            tpl=(f"https://supercasa.pt/comprar-casas/{zs}/com-{tipo_sc2}/"
+                 f"?preco-max={perfil['preco_max']}&quartos-min={perfil['quartos_min']}&pagina={{page}}")
             def parse(html,tl=tl,zl=zl):
                 soup=BeautifulSoup(html,"html.parser"); its=[]
                 for it in soup.select("[data-id],.property-item,article"):
@@ -921,8 +928,8 @@ def scrape_casasdosotavento(p):
     res=[]; pags=0
     for zs in p["zonas"]:
         zl=TODAS_AS_ZONAS.get(zs,zs)
-        url=(f"https://www.casasdosotavento.pt/imoveis/venda/{zs}/"
-             f"?preco_max={p['preco_max']}&quartos_min={p['quartos_min']}&page={{page}}")
+        url=(f"https://www.casasdosotavento.pt/imoveis/venda/"
+             f"?concelho={zs}&preco_max={p['preco_max']}&quartos_min={p['quartos_min']}&page={{page}}")
         try: its,pg=_sel_scrape(url,"https://www.casasdosotavento.pt","Casas do Sotavento",zl); res.extend(its); pags+=pg
         except Exception as e: log.error(f"CasasSotavento/{zs}: {e}")
         time.sleep(random.uniform(2,4))
@@ -945,12 +952,12 @@ def scrape_lnhouse(p):
     except Exception as e: log.error(f"LNHouse: {e}"); return [],0
 
 def scrape_sortami(p):
-    url=f"https://www.sortami.pt/comprar?preco_max={p['preco_max']}&quartos_min={p['quartos_min']}&page={{page}}"
+    url=f"https://www.sortami.pt/imoveis/comprar?preco_max={p['preco_max']}&quartos_min={p['quartos_min']}&page={{page}}"
     try: return _sel_scrape(url,"https://www.sortami.pt","Sortami","Algarve Sotavento")
     except Exception as e: log.error(f"Sortami: {e}"); return [],0
 
 def scrape_garvetur(p):
-    url=(f"https://www.garvetur.pt/comprar?tipo=apartamento,moradia"
+    url=(f"https://www.garvetur.pt/imoveis/venda"
          f"&preco_max={p['preco_max']}&quartos_min={p['quartos_min']}&zona={','.join(p['zonas'])}&page={{page}}")
     try: return _sel_scrape(url,"https://www.garvetur.pt","Garvetur","Algarve")
     except Exception as e: log.error(f"Garvetur: {e}"); return [],0
@@ -993,7 +1000,7 @@ def scrape_kwportugal(p):
     res=[]; pags=0
     for zs in p["zonas"]:
         zl=TODAS_AS_ZONAS.get(zs,zs)
-        url=f"https://www.kwportugal.pt/pt/comprar/{zs}/?priceMax={p['preco_max']}&rooms={p['quartos_min']}&page={{page}}"
+        url=f"https://www.kwportugal.pt/imoveis/comprar/{zs}/?priceMax={p['preco_max']}&rooms={p['quartos_min']}&page={{page}}"
         try: its,pg=_sel_scrape(url,"https://www.kwportugal.pt","KW Portugal",zl); res.extend(its); pags+=pg
         except Exception as e: log.error(f"KW/{zs}: {e}")
         time.sleep(random.uniform(2,4))
