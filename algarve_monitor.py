@@ -576,26 +576,37 @@ def get_driver():
     opts.add_experimental_option("excludeSwitches",["enable-automation"])
     opts.add_experimental_option("useAutomationExtension",False)
 
-    # Find chromium binary in Nix store
+    # Find chromium/chrome binary — apt installs to /usr/bin
     chromium_bin = None
-    for pattern in ["/nix/store/*/bin/chromium","/nix/store/*/bin/chromium-browser",
-                    "/usr/bin/chromium","/usr/bin/chromium-browser"]:
-        matches = glob.glob(pattern)
-        if matches:
-            chromium_bin = matches[0]; break
+    for path in ["/usr/bin/chromium", "/usr/bin/chromium-browser",
+                 "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable"]:
+        if os.path.exists(path):
+            chromium_bin = path; break
 
-    # Find chromedriver in Nix store
+    # Try nix store as fallback
+    if not chromium_bin:
+        for pattern in ["/nix/store/*/bin/chromium","/nix/store/*/bin/chromium-browser"]:
+            matches = glob.glob(pattern)
+            if matches:
+                chromium_bin = matches[0]; break
+
+    # Find chromedriver
     chromedriver_bin = None
-    for pattern in ["/nix/store/*/bin/chromedriver","/usr/bin/chromedriver"]:
-        matches = glob.glob(pattern)
-        if matches:
-            chromedriver_bin = matches[0]; break
+    for path in ["/usr/bin/chromedriver", "/usr/bin/chromium-driver"]:
+        if os.path.exists(path):
+            chromedriver_bin = path; break
+
+    if not chromedriver_bin:
+        for pattern in ["/nix/store/*/bin/chromedriver"]:
+            matches = glob.glob(pattern)
+            if matches:
+                chromedriver_bin = matches[0]; break
 
     if chromium_bin:
         opts.binary_location = chromium_bin
         log.info(f"Chromium: {chromium_bin}")
     else:
-        log.warning("Chromium não encontrado no Nix store!")
+        log.warning("Chromium não encontrado!")
 
     if chromedriver_bin:
         svc = Service(chromedriver_bin)

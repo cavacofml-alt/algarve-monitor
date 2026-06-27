@@ -1,12 +1,8 @@
 [phases.setup]
-nixPkgs = ["chromium", "chromedriver"]
+aptPkgs = ["chromium", "chromium-driver"]
 
 [phases.install]
-cmds = [
-  "pip install -r requirements.txt",
-  "ln -sf $(which chromium) /usr/local/bin/google-chrome || true",
-  "ln -sf $(which chromedriver) /usr/local/bin/chromedriver-local || true"
-]
+cmds = ["pip install -r requirements.txt"]
 
 [start]
 cmd = "python algarve_monitor.py"
