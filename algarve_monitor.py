@@ -1397,10 +1397,85 @@ def verificar_perfil(perfil):
             if baixas: msg+=f"📉 {len(baixas)} baixa(s)\n"
             enviar_telegram(perfil["telegram_chat"],msg)
 
+def verificar_creditos_scraperapi():
+    """
+    Verifica créditos disponíveis na ScraperAPI.
+    Devolve (usados, limite, percentagem) ou None se não conseguir verificar.
+    """
+    if not SCRAPERAPI_KEY:
+        return None
+    try:
+        r = requests.get(
+            f"https://api.scraperapi.com/account?api_key={SCRAPERAPI_KEY}",
+            timeout=10)
+        data = r.json()
+        used  = data.get("requestCount", 0)
+        limit = data.get("requestLimit", 1000)
+        pct   = int((used / limit) * 100) if limit else 100
+        return used, limit, pct
+    except Exception as e:
+        log.warning(f"Não foi possível verificar créditos ScraperAPI: {e}")
+        return None
+
 def verificar():
     log.info("="*55)
     log.info(f"Verificação: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
     log.info("="*55)
+
+    # Verifica créditos antes de correr
+    creditos = verificar_creditos_scraperapi()
+    if creditos:
+        used, limit, pct = creditos
+        log.info(f"ScraperAPI: {used}/{limit} créditos usados ({pct}%)")
+
+        if pct >= 100:
+            log.warning("⛔ ScraperAPI sem créditos! A saltar esta ronda.")
+            # Envia email de aviso
+            try:
+                msg = MIMEMultipart("alternative")
+                msg["Subject"] = "⛔ ScraperAPI sem créditos — Monitor Imóveis pausado"
+                msg["From"] = EMAIL_REMETENTE
+                msg["To"]   = EMAIL_DESTINATARIO
+                msg.attach(MIMEText(f"""
+                <html><body style="font-family:Arial,sans-serif;padding:20px">
+                <h2 style="color:#dc2626">⛔ ScraperAPI sem créditos!</h2>
+                <p>Usados: <b>{used}/{limit}</b> ({pct}%)</p>
+                <p>O monitor está <b>pausado</b> até ao reset mensal.</p>
+                <p>Para continuar agora, faz upgrade em
+                <a href="https://scraperapi.com/pricing">scraperapi.com/pricing</a></p>
+                </body></html>""", "html"))
+                with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+                    smtp.login(EMAIL_REMETENTE, EMAIL_PASSWORD)
+                    smtp.sendmail(EMAIL_REMETENTE, EMAIL_DESTINATARIO, msg.as_string())
+            except Exception as e:
+                log.error(f"Email aviso créditos: {e}")
+            return
+
+        if pct >= 80:
+            log.warning(f"⚠️ ScraperAPI a {pct}% do limite! Considera fazer upgrade.")
+            # Envia alerta mas continua
+            try:
+                msg = MIMEMultipart("alternative")
+                msg["Subject"] = f"⚠️ ScraperAPI a {pct}% do limite — Monitor Imóveis"
+                msg["From"] = EMAIL_REMETENTE
+                msg["To"]   = EMAIL_DESTINATARIO
+                msg.attach(MIMEText(f"""
+                <html><body style="font-family:Arial,sans-serif;padding:20px">
+                <h2 style="color:#f59e0b">⚠️ ScraperAPI quase no limite!</h2>
+                <p>Usados: <b>{used}/{limit}</b> ({pct}%)</p>
+                <p>Restam aproximadamente <b>{limit-used}</b> créditos
+                (~{max(0,(limit-used)//20)} dias ao ritmo atual).</p>
+                <p>Faz upgrade em
+                <a href="https://scraperapi.com/pricing">scraperapi.com/pricing</a>
+                para não interromper o monitor.</p>
+                </body></html>""", "html"))
+                with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+                    smtp.login(EMAIL_REMETENTE, EMAIL_PASSWORD)
+                    smtp.sendmail(EMAIL_REMETENTE, EMAIL_DESTINATARIO, msg.as_string())
+                log.info("Alerta 80% enviado por email.")
+            except Exception as e:
+                log.error(f"Email alerta 80%: {e}")
+
     perfis_ativos = get_perfis_db()
     log.info(f"{len(perfis_ativos)} perfil(is) ativo(s)")
     for p in perfis_ativos: verificar_perfil(p)
@@ -1838,6 +1913,31 @@ def api_historico_precos():
                 return jsonify([dict(r) for r in cur.fetchall()])
     except Exception as e:
         return jsonify([])
+
+@app.route("/api/imovel/apagar", methods=["DELETE"])
+@login_required
+def api_apagar_imovel():
+    try:
+        data = request.get_json()
+        iid = data.get("id")
+        if not iid:
+            return jsonify({"erro":"ID não fornecido"}), 400
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                # Apaga também histórico de preços e visitas
+                cur.execute("DELETE FROM historico_precos WHERE imovel_id=%s", (iid,))
+                cur.execute("DELETE FROM visitas WHERE imovel_id=%s", (iid,))
+                cur.execute("DELETE FROM imoveis WHERE id=%s", (iid,))
+                apagados = cur.rowcount
+            conn.commit()
+        if apagados:
+            log.info(f"Imóvel apagado: {iid[:50]}")
+            return jsonify({"ok": True})
+        else:
+            return jsonify({"erro": "Imóvel não encontrado"}), 404
+    except Exception as e:
+        log.error(f"api_apagar_imovel: {e}")
+        return jsonify({"erro": str(e)}), 500
 
 @app.route("/health")
 def health(): return jsonify({"status":"ok","ts":datetime.now().isoformat()})

@@ -414,6 +414,7 @@ function renderCard(im){
         </select>
         <button class="btn-nota" onclick="saveNota('${im.id}',this)">💾</button>
         <button class="btn-detail" onclick="abrirDetalhe('${im.id}')">🔍</button>
+        <button onclick="apagarImovel('${im.id}',this)" style="padding:4px 8px;background:#dc2626;color:white;border:none;border-radius:5px;font-size:11px;cursor:pointer" title="Apagar permanentemente">🗑</button>
       </div>
       <textarea class="card-nota" rows="2" placeholder="Notas..." id="n-${btoa(im.id).slice(0,12)}">${im.nota||''}</textarea>
     </div>
@@ -670,6 +671,29 @@ document.querySelectorAll('.modal-bg').forEach(m=>m.addEventListener('click',e=>
 document.addEventListener('keydown',e=>{ if(e.key==='Escape') document.querySelectorAll('.modal-bg.open').forEach(m=>m.classList.remove('open')); });
 
 // ── INIT ──────────────────────────────────────────────────
+async function apagarImovel(id, btn){
+  if(!confirm('Apagar este imóvel permanentemente do dashboard?')) return;
+  btn.textContent='⏳'; btn.disabled=true;
+  const r = await fetch('/api/imovel/apagar',{
+    method:'DELETE',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({id})
+  });
+  const d = await r.json();
+  if(d.ok){
+    // Remove card from view immediately
+    const cardId = 'c-'+btoa(id).slice(0,12);
+    const card = document.getElementById(cardId);
+    if(card){ card.style.opacity='0'; card.style.transition='opacity .3s'; setTimeout(()=>card.remove(),300); }
+    todos = todos.filter(i=>i.id!==id);
+    // Update stats
+    carregar();
+  } else {
+    alert('Erro ao apagar: '+(d.erro||'desconhecido'));
+    btn.textContent='🗑'; btn.disabled=false;
+  }
+}
+
 carregar();
 setInterval(carregar, 60000);
 
