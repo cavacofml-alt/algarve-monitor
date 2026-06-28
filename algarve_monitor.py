@@ -43,7 +43,7 @@ log = logging.getLogger("algarve-monitor")
 EMAIL_REMETENTE    = os.getenv("EMAIL_REMETENTE",    "o_teu_email@gmail.com")
 EMAIL_PASSWORD     = os.getenv("EMAIL_PASSWORD",     "a_tua_app_password")
 EMAIL_DESTINATARIO = os.getenv("EMAIL_DESTINATARIO", EMAIL_REMETENTE)
-INTERVALO_HORAS    = int(os.getenv("INTERVALO_HORAS", "6"))
+INTERVALO_HORAS    = int(os.getenv("INTERVALO_HORAS", "24"))
 DATABASE_URL       = os.getenv("DATABASE_URL", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 SCRAPERAPI_KEY     = os.getenv("SCRAPERAPI_KEY", "")
@@ -282,6 +282,39 @@ def sincronizar_perfis_iniciais():
     except Exception as e:
         log.warning(f"sincronizar_perfis_iniciais: {e}")
 
+def geocodificar_existentes():
+    """Geocodifica imóveis que ainda não têm coordenadas GPS."""
+    try:
+        with get_db() as conn:
+            with conn.cursor(row_factory=psycopg_rows.dict_row) as cur:
+                cur.execute("""
+                    SELECT id, titulo, zona FROM imoveis
+                    WHERE lat IS NULL AND disponivel=TRUE
+                    LIMIT 50
+                """)
+                sem_coords = cur.fetchall()
+
+        if not sem_coords:
+            log.info("Geocoding: todos os imóveis já têm coordenadas.")
+            return
+
+        log.info(f"A geocodificar {len(sem_coords)} imóveis...")
+        atualizados = 0
+        for im in sem_coords:
+            lat, lng = geocodificar(im["titulo"], im["zona"])
+            if lat and lng:
+                with get_db() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE imoveis SET lat=%s, lng=%s WHERE id=%s",
+                            (lat, lng, im["id"]))
+                    conn.commit()
+                atualizados += 1
+
+        log.info(f"Geocoding concluído: {atualizados}/{len(sem_coords)} atualizados")
+    except Exception as e:
+        log.error(f"geocodificar_existentes: {e}")
+
 def extrair_preco_valor(p):
     if not p: return None
     d = re.sub(r"[^\d]", "", p)
@@ -298,6 +331,62 @@ def extrair_quartos(t):
     if m: return int(m.group(1))
     m = re.search(r"(\d)\s*quarto", t, re.I)
     return int(m.group(1)) if m else None
+
+# Cache de geocoding para não repetir pedidos
+_geocoding_cache = {}
+
+def geocodificar(titulo, zona):
+    """
+    Converte zona/título em coordenadas GPS usando Nominatim (OpenStreetMap).
+    Completamente gratuito, sem API key.
+    """
+    if not zona: return None, None
+
+    # Mapeamento direto de zonas conhecidas (mais rápido e fiável)
+    COORDS_ZONAS = {
+        "Faro":         (37.0193, -7.9304),
+        "Tavira":       (37.1241, -7.6507),
+        "Olhão":        (37.0290, -7.8418),
+        "VRSA":         (37.1940, -7.4148),
+        "Castro Marim": (37.2147, -7.4440),
+        "Lagos":        (37.1019, -8.6752),
+        "Portimão":     (37.1358, -8.5380),
+        "Silves":       (37.1897, -8.4388),
+        "Albufeira":    (37.0882, -8.2506),
+        "Loulé":        (37.1435, -8.0240),
+        "VRSA/Castro Marim": (37.2040, -7.4300),
+        "Algarve Sotavento": (37.1000, -7.7000),
+        "Algarve":      (37.0902, -8.0902),
+    }
+
+    if zona in COORDS_ZONAS:
+        lat, lng = COORDS_ZONAS[zona]
+        # Adiciona pequena variação aleatória para não sobrepor pins no mesmo ponto
+        import random
+        lat += random.uniform(-0.02, 0.02)
+        lng += random.uniform(-0.02, 0.02)
+        return round(lat, 6), round(lng, 6)
+
+    # Tenta geocodificar via Nominatim se zona não está no mapa
+    cache_key = zona.lower().strip()
+    if cache_key in _geocoding_cache:
+        return _geocoding_cache[cache_key]
+
+    try:
+        url = f"https://nominatim.openstreetmap.org/search?q={requests.utils.quote(zona+', Algarve, Portugal')}&format=json&limit=1"
+        r = requests.get(url, headers={"User-Agent":"AlgarveMonitor/1.0"}, timeout=5)
+        data = r.json()
+        if data:
+            lat = float(data[0]["lat"])
+            lng = float(data[0]["lon"])
+            _geocoding_cache[cache_key] = (lat, lng)
+            time.sleep(1)  # respeitar rate limit Nominatim
+            return lat, lng
+    except Exception as e:
+        log.debug(f"Geocoding {zona}: {e}")
+
+    _geocoding_cache[cache_key] = (None, None)
+    return None, None
 
 def calcular_score(item, perfil):
     score = 0
@@ -322,6 +411,15 @@ def imovel_existe(imovel_id):
 def guardar_imovel(item, perfil_nome, score):
     pv  = item.get("preco_valor") or extrair_preco_valor(item.get("preco"))
     a   = item.get("area_m2");  pm2 = int(pv/a) if pv and a else None
+
+    # Geocodifica se não tem coordenadas
+    if not item.get("lat") and not item.get("lng"):
+        zona = item.get("zona","")
+        titulo = item.get("titulo","")
+        lat, lng = geocodificar(titulo, zona)
+        if lat and lng:
+            item["lat"] = lat
+            item["lng"] = lng
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -611,11 +709,29 @@ def enriquecer_com_detalhes(item):
 # DEDUPLICAÇÃO
 # ============================================================
 
+def extrair_referencia(titulo):
+    """Extrai referência do imóvel do título (ex: REF: 12345, T/123456)."""
+    if not titulo: return None
+    import re
+    m = re.search(r'(?:ref[:\s#.]+|t/)(\w{4,})', titulo, re.I)
+    return m.group(1).upper() if m else None
+
 def gerar_chave_dedup(item):
+    """
+    Gera chave de deduplicação. Usa referência se disponível,
+    senão usa zona+preço+quartos+área.
+    """
     zona  = (item.get("zona") or "").lower().strip()
     preco = round((item.get("preco_valor") or 0)/1000)*1000
     qts   = item.get("quartos") or 0
     area  = round((item.get("area_m2") or 0)/5)*5
+
+    # Se tem referência, usa como chave primária
+    ref = extrair_referencia(item.get("titulo",""))
+    if ref and zona:
+        return hashlib.md5(f"ref|{zona}|{ref}".encode()).hexdigest()
+
+    # Fallback: zona+preço+quartos+área
     return hashlib.md5(f"{zona}|{preco}|{qts}|{area}".encode()).hexdigest()
 
 def deduplicar(items):
@@ -758,7 +874,10 @@ PALAVRAS_ARRENDAMENTO = [
     "arrendar","arrendamento","arrendado","aluguer","alugar","aluga-se",
     "renda","rent","rental","arenda","para arrendar","por mês","€/mês",
     "/mês","mensal","mes","month","monthly","trespasse","trespass",
+    "arrendamento habitacional","arrendamento comercial",
+    "para arrendamento","disponível para arrendar",
 ]
+PALAVRAS_VENDA = ["venda","comprar","compra","vende-se","para venda","sale","sell"]
 
 def validar(item, perfil):
     """Valida imóvel contra filtros do perfil e exclui arrendamentos."""
@@ -1637,6 +1756,60 @@ def api_teste_email():
     except Exception as e:
         return jsonify({"erro":str(e)}),500
 
+def verificar_limite_scraperapi():
+    """Verifica uso do ScraperAPI e envia alerta se >80%."""
+    if not SCRAPERAPI_KEY: return
+    try:
+        r = requests.get(
+            f"https://api.scraperapi.com/account?api_key={SCRAPERAPI_KEY}",
+            timeout=10)
+        data = r.json()
+        used    = data.get("requestCount", 0)
+        limit   = data.get("requestLimit", 1000)
+        pct     = int((used / limit) * 100) if limit else 0
+        log.info(f"ScraperAPI: {used}/{limit} pedidos ({pct}%)")
+        if pct >= 80:
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = f"⚠️ ScraperAPI a {pct}% do limite ({used}/{limit} pedidos)"
+            msg["From"] = EMAIL_REMETENTE
+            msg["To"]   = EMAIL_DESTINATARIO
+            msg.attach(MIMEText(f"""
+            <html><body style="font-family:Arial,sans-serif;padding:20px">
+            <h2 style="color:#dc2626">⚠️ ScraperAPI quase no limite!</h2>
+            <p>Usados: <b>{used}/{limit}</b> pedidos ({pct}%)</p>
+            <p>Considera fazer upgrade em <a href="https://scraperapi.com">scraperapi.com</a></p>
+            </body></html>""", "html"))
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+                smtp.login(EMAIL_REMETENTE, EMAIL_PASSWORD)
+                smtp.sendmail(EMAIL_REMETENTE, EMAIL_DESTINATARIO, msg.as_string())
+            log.warning(f"⚠️ Alerta ScraperAPI enviado ({pct}%)")
+        return {"used": used, "limit": limit, "pct": pct}
+    except Exception as e:
+        log.warning(f"verificar_limite_scraperapi: {e}")
+        return {}
+
+@app.route("/api/scraperapi/stats")
+@login_required
+def api_scraperapi_stats():
+    stats = verificar_limite_scraperapi()
+    return jsonify(stats or {})
+
+@app.route("/api/historico_precos")
+@login_required
+def api_historico_precos():
+    imovel_id = request.args.get("imovel_id","")
+    try:
+        with get_db() as conn:
+            with conn.cursor(row_factory=psycopg_rows.dict_row) as cur:
+                cur.execute("""
+                    SELECT preco_antigo, preco_novo, alterado_em::TEXT
+                    FROM historico_precos WHERE imovel_id=%s
+                    ORDER BY alterado_em DESC
+                """, (imovel_id,))
+                return jsonify([dict(r) for r in cur.fetchall()])
+    except Exception as e:
+        return jsonify([])
+
 @app.route("/health")
 def health(): return jsonify({"status":"ok","ts":datetime.now().isoformat()})
 
@@ -1651,15 +1824,20 @@ if __name__=="__main__":
     if DATABASE_URL:
         init_db()
         sincronizar_perfis_iniciais()
+        # Geocodifica imóveis existentes em background
+        threading.Thread(target=geocodificar_existentes, daemon=True).start()
     else: log.warning("DATABASE_URL não definida!")
     log.info(f"Login: {DASHBOARD_USERNAME} / {DASHBOARD_PASSWORD}")
     log.info(f"{len(SCRAPERS)} fontes | {len(PERFIS)} perfil(is) | cada {INTERVALO_HORAS}h")
     threading.Thread(target=lambda:app.run(host="0.0.0.0",port=PORT,use_reloader=False),daemon=True).start()
     log.info(f"Dashboard em http://localhost:{PORT}")
     verificar()
-    schedule.every(INTERVALO_HORAS).hours.do(verificar)
+    # Corre uma vez por dia às 08:00 — poupa pedidos ScraperAPI
+    schedule.every().day.at("08:00").do(verificar)
     schedule.every().monday.at("08:00").do(enviar_resumo_semanal)
-    schedule.every(12).hours.do(verificar_scrapers_com_falha)
+    schedule.every().day.at("09:00").do(verificar_scrapers_com_falha)
+    schedule.every().day.at("20:00").do(verificar_limite_scraperapi)
+    schedule.every().day.at("08:30").do(geocodificar_existentes)
     log.info("A monitorizar. Ctrl+C para parar.\n")
     while True: schedule.run_pending(); time.sleep(60)
 "# v4.1" 
