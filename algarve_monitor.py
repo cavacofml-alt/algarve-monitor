@@ -14,6 +14,7 @@ Novidades v4:
 """
 
 import os, re, time, json, random, logging, smtplib, schedule, threading
+from urllib.parse import urljoin
 import hashlib, secrets, functools
 import requests
 import psycopg
@@ -1298,6 +1299,8 @@ def paginar_requests(url_tpl, parse_fn):
         except Exception as e: log.error(f"Pag {pag}: {e}"); break
     return todos,pag
 
+MAX_PROXY_TIMEOUT = 20  # segundos — evita que um scraper bloqueie 112s
+
 def paginar_scraperapi(url_tpl, parse_fn):
     """Usa rotação de proxies (ScraperAPI/ZenRows/ScrapingBee) para contornar bloqueios."""
     todos=[]; pag=1
@@ -1358,9 +1361,9 @@ def scrape_idealista(perfil):
             tpl=(f"https://www.idealista.pt/comprar-casas/{zs}/{filtro_tipo}/"
                  f"?preco-max={perfil['preco_max']}&quartos-min={perfil['quartos_min']}&pagina={{page}}")
             def parse(html,tl=tl,zl=zl):
+                its=[]
                 soup=safe_soup(html); 
                 if not soup: return its
-                its=[]
                 for it in soup.select("article.item"):
                     lt=it.select_one("a.item-link"); pt=it.select_one(".item-price")
                     tt=it.select_one(".item-title"); img=it.select_one("img")
@@ -1384,9 +1387,9 @@ def scrape_imovirtual(perfil):
             tpl=(f"https://www.imovirtual.com/comprar/{tiv}/{zs}/"
                  f"?priceMax={perfil['preco_max']}&roomsMin={perfil['quartos_min']}&nrAdsPerPage=36&page={{page}}")
             def parse(html,tl=tl,zl=zl):
+                its=[]
                 soup=safe_soup(html); 
                 if not soup: return its
-                its=[]
                 for it in soup.select("article[data-cy='listing-item']"):
                     lt=it.select_one("a"); pt=it.select_one("[data-cy='listing-item-price']")
                     tt=it.select_one("[data-cy='listing-item-title']"); img=it.select_one("img")
@@ -1410,9 +1413,9 @@ def scrape_casasapo(perfil):
             tpl=(f"https://casa.sapo.pt/comprar-{tsk}/{zs}/"
                  f"?precomax={perfil['preco_max']}&tipologia={tips}&pn={{page}}")
             def parse(html,tl=tl,zl=zl):
+                its=[]
                 soup=safe_soup(html); 
                 if not soup: return its
-                its=[]
                 for it in soup.select(".property-info-content,.searchResultProperty"):
                     lt=it.select_one("a"); pt=it.select_one(".property-price,.price")
                     tt=it.select_one(".property-title,h2"); img=it.select_one("img")
@@ -1439,9 +1442,9 @@ def scrape_supercasa(perfil):
             tpl=(f"https://supercasa.pt/comprar-casas/{zs}/com-{tipo_sc2}/"
                  f"?preco-max={perfil['preco_max']}&quartos-min={perfil['quartos_min']}&pagina={{page}}")
             def parse(html,tl=tl,zl=zl):
+                its=[]
                 soup=safe_soup(html); 
                 if not soup: return its
-                its=[]
                 for it in soup.select("[data-id],.property-item,article"):
                     lt=it.select_one("a"); pt=it.select_one(".price,[class*='price']")
                     tt=it.select_one("h2,h3,[class*='title']"); img=it.select_one("img")
@@ -1668,17 +1671,44 @@ def scrape_coldwell(p):
     return scrape_generico("Coldwell Banker", urls, p)
 
 def scrape_sothebys(p):
-    """Sotheby's — Playwright (connection error via requests)."""
-    return scrape_playwright_html(
-        "Sotheby's",
-        "https://www.sothebysrealty.pt/imoveis/compra",
-        "[class*='property'],[class*='listing'],article,.card",
-        "Algarve", p
-    )
+    """Sotheby's — Playwright com ignore_https_errors (certificado SSL inválido)."""
+    if not PLAYWRIGHT_AVAILABLE: return [],0
+    items = []
+    with _playwright_semaphore:
+        try:
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch(
+                    headless=True, executable_path="/usr/bin/chromium",
+                    args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu"])
+                ctx = browser.new_context(
+                    ignore_https_errors=True,
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    locale="pt-PT")
+                page = ctx.new_page()
+                page.goto("https://www.sothebysrealty.pt/imoveis/compra",
+                          wait_until="domcontentloaded", timeout=20000)
+                page.wait_for_timeout(3000)
+                html = page.content()
+                browser.close()
+            soup = safe_soup(html, "Sotheby's")
+            if soup:
+                for card in soup.select("[class*='property'],[class*='listing'],article"):
+                    lt = card.select_one("a[href]")
+                    pt = card.select_one("[class*='price']")
+                    tt = card.select_one("h1,h2,h3,h4,[class*='title']")
+                    if not lt: continue
+                    href = lt.get("href","")
+                    link = href if href.startswith("http") else urljoin("https://www.sothebysrealty.pt", href)
+                    item = fazer_item(link, tt.get_text(strip=True) if tt else "Sotheby's",
+                                     pt.get_text(strip=True) if pt else "N/D", "Sotheby's", "Algarve", None)
+                    if validar(item, p): items.append(item)
+        except Exception as e:
+            log.error(f"  Sotheby's: {e}")
+    return items, 1
 
 def scrape_iad(p):
-    urls=[f"https://www.iadportugal.pt/comprar?page={page}",
-          f"https://www.iadfrance.pt/comprar/moradia/algarve?prix_max={p['preco_max']}"]
+    urls=["https://www.iadportugal.pt/comprar",
+          f"https://www.iadportugal.pt/comprar/moradia?prix_max={p['preco_max']}"]
     return scrape_generico("IAD Portugal", urls, p)
 
 def scrape_fineandcountry(p):
@@ -1763,32 +1793,13 @@ def scrape_tripalgarve(p):
     return scrape_generico("Tripalgarve", urls, p)
 
 def scrape_algarvedream(p):
-    """Algarve Dream Property — Playwright com filtro de domínio."""
-    if not PLAYWRIGHT_AVAILABLE: return [],0
-    try:
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch(
-                headless=True, executable_path="/usr/bin/chromium",
-                args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu"])
-            page = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                locale="pt-PT").new_page()
-            # Open homepage and find listing URL on same domain
-            page.goto("https://www.algarvedreamproperty.com", wait_until="domcontentloaded", timeout=20000)
-            page.wait_for_timeout(2000)
-            # Find listing link on same domain only
-            links = page.evaluate("""() =>
-                Array.from(document.querySelectorAll('a[href]'))
-                .filter(a => a.href.includes('algarvedreamproperty.com'))
-                .filter(a => /imoveis|properties|for-sale|venda|listing/i.test(a.href+a.innerText))
-                .map(a => a.href)
-            """)
-            url = links[0] if links else "https://www.algarvedreamproperty.com/imoveis"
-            log.info(f"  Algarve Dream: URL={url}")
-            return scrape_playwright_html("Algarve Dream Property", url,
-                "[class*='property'],[class*='listing'],article", "Algarve", p)
-    except Exception as e:
-        log.error(f"  Algarve Dream: {e}"); return [],0
+    """Algarve Dream Property — Playwright direto para /imoveis."""
+    return scrape_playwright_html(
+        "Algarve Dream Property",
+        "https://www.algarvedreamproperty.com/imoveis",
+        "[class*='property'],[class*='listing'],article",
+        "Algarve", p
+    )
 
 # ── BARLAVENTO ───────────────────────────────────────────
 
@@ -1818,52 +1829,57 @@ def scrape_a1algarve(p):
 
 # ── SCRAPERS COM PLAYWRIGHT (sites que bloqueiam requests mas não browser) ──
 
+# Semáforo para limitar Playwright a 2 instâncias simultâneas
+import threading
+_playwright_semaphore = threading.Semaphore(2)
+
 def scrape_playwright_html(nome, url, sel, zona, perfil):
-    """Scraper genérico usando Playwright para sites React/SPA."""
+    """Scraper genérico usando Playwright para sites React/SPA.
+    Máximo 2 browsers simultâneos para evitar crash por memória."""
     if not PLAYWRIGHT_AVAILABLE:
         log.warning(f"{nome}: Playwright não disponível")
         return [], 0
     items = []
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True, executable_path="/usr/bin/chromium",
-                args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu",
-                      "--disable-blink-features=AutomationControlled"]
-            )
-            ctx = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                viewport={"width":1920,"height":1080}, locale="pt-PT"
-            )
-            page = ctx.new_page()
-            page.goto(url, wait_until="networkidle", timeout=30000)
-            # Scroll to load all items
-            for pos in [0.3, 0.6, 1.0]:
-                page.evaluate(f"window.scrollTo(0, document.body.scrollHeight*{pos})")
-                page.wait_for_timeout(1500)
-            html = page.content()
-            browser.close()
-
-        soup = safe_soup(html, nome)
-        if not soup: return [], 0
-
-        cards = soup.select(sel)
-        log.info(f"    Playwright {nome}: {len(cards)} cards")
-        for card in cards:
-            lt  = card.select_one("a[href]")
-            pt  = card.select_one("[class*='price'],[class*='preco'],[class*='valor']")
-            tt  = card.select_one("h1,h2,h3,h4,[class*='title'],[class*='nome']")
-            img = card.select_one("img[src]")
-            if not lt: continue
-            href = lt.get("href","")
-            link = href if href.startswith("http") else urljoin(url, href)
-            titulo = (tt.get_text(strip=True) if tt else nome)
-            preco  = (pt.get_text(strip=True) if pt else "N/D")
-            imagem = img.get("src") or img.get("data-src","") if img else None
-            item = fazer_item(link, titulo, preco, nome, zona, imagem)
-            if validar(item, perfil): items.append(item)
-    except Exception as e:
-        log.error(f"  Playwright {nome}: {e}")
+    with _playwright_semaphore:
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(
+                    headless=True, executable_path="/usr/bin/chromium",
+                    args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu",
+                          "--disable-blink-features=AutomationControlled"]
+                )
+                ctx = browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    viewport={"width":1920,"height":1080}, locale="pt-PT"
+                )
+                page = ctx.new_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=20000)
+                page.wait_for_timeout(3000)
+                for pos in [0.3, 0.6, 1.0]:
+                    page.evaluate(f"window.scrollTo(0, document.body.scrollHeight*{pos})")
+                    page.wait_for_timeout(1000)
+                html = page.content()
+                browser.close()
+            soup = safe_soup(html, nome)
+            if not soup:
+                return [], 0
+            cards = soup.select(sel)
+            log.info(f"    Playwright {nome}: {len(cards)} cards")
+            for card in cards:
+                lt  = card.select_one("a[href]")
+                pt  = card.select_one("[class*='price'],[class*='preco'],[class*='valor']")
+                tt  = card.select_one("h1,h2,h3,h4,[class*='title'],[class*='nome']")
+                img = card.select_one("img[src]")
+                if not lt: continue
+                href = lt.get("href","")
+                link = href if href.startswith("http") else urljoin(url, href)
+                titulo = tt.get_text(strip=True) if tt else nome
+                preco  = pt.get_text(strip=True) if pt else "N/D"
+                imagem = img.get("src") or img.get("data-src","") if img else None
+                item = fazer_item(link, titulo, preco, nome, zona, imagem)
+                if validar(item, perfil): items.append(item)
+        except Exception as e:
+            log.error(f"  Playwright {nome}: {e}")
     return items, 1
 
 def scrape_boto(p):
@@ -1923,46 +1939,18 @@ def scrape_vernonalgarve(p):
     )
 
 def scrape_dalmaportuguesa(p):
-    # D'Alma: tenta descobrir URL de listagem via Playwright
-    if not PLAYWRIGHT_AVAILABLE: return [], 0
-    try:
-        with sync_playwright() as p_pw:
-            browser = p_pw.chromium.launch(
-                headless=True, executable_path="/usr/bin/chromium",
-                args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu"])
-            page = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                locale="pt-PT").new_page()
-            page.goto("https://www.dalmaportuguesa.com", wait_until="domcontentloaded", timeout=20000)
-            page.wait_for_timeout(3000)
-            html = page.content()
-            browser.close()
-        soup = safe_soup(html, "D'Alma")
-        if soup:
-            precos = [e.get_text(strip=True) for e in soup.find_all(True)
-                      if "€" in e.get_text() and 5<len(e.get_text(strip=True))<30
-                      and any(c.isdigit() for c in e.get_text())]
-            cards = soup.select("[class*='property'],[class*='listing'],[class*='imovel'],article")
-            items = []
-            for card in cards:
-                lt = card.select_one("a[href]")
-                pt = card.select_one("[class*='price'],[class*='preco']")
-                if not lt: continue
-                href = lt.get("href","")
-                link = href if href.startswith("http") else "https://www.dalmaportuguesa.com"+href
-                titulo = card.get_text(strip=True)[:80]
-                preco  = pt.get_text(strip=True) if pt else "N/D"
-                item = fazer_item(link, titulo, preco, "D'Alma Portuguesa", "Algarve", None)
-                if validar(item, p): items.append(item)
-            return items, 1
-    except Exception as e:
-        log.error(f"  D'Alma Portuguesa: {e}")
-    return [], 0
+    """D'Alma Portuguesa — Playwright direto."""
+    return scrape_playwright_html(
+        "D'Alma Portuguesa",
+        "https://www.dalmaportuguesa.com/imoveis",
+        "[class*='property'],[class*='listing'],article,[class*='card']",
+        "Algarve", p
+    )
 
 # ── TRIÂNGULO DOURADO ────────────────────────────────────
 
 def scrape_qpsavills(p):
-    urls=[f"https://www.quintaproperty.com/en/buy?page={page}"]
+    urls=["https://www.quintaproperty.com/en/buy"]
     return scrape_generico("QP Savills", urls, p)
 
 def scrape_jppproperties(p):
@@ -2090,9 +2078,9 @@ SCRAPERS=[
     ("Algarve Dream Property",scrape_algarvedream), # ✅ Playwright
     ("Your Luxury Property",scrape_yourluxury), # ✅ Playwright
     ("Dils Portugal",scrape_dils),           # ✅ Playwright
-    ("Sotheby's",scrape_sothebys),           # ✅ Playwright
-    ("Chave Nova",scrape_chavanova),         # ✅ Playwright
-    ("Villas Key",scrape_villaskey),         # ✅ Playwright
+    # ("Sotheby's",scrape_sothebys),          # ❌ SSL inválido - domínio inacessível
+    # ("Chave Nova",scrape_chavanova),        # ❌ ERR_NAME_NOT_RESOLVED - domínio não existe
+    # ("Villas Key",scrape_villaskey),        # ❌ ERR_NAME_NOT_RESOLVED - domínio não existe
 ]
 
 # ============================================================
