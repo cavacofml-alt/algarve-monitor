@@ -43,7 +43,7 @@ log = logging.getLogger("algarve-monitor")
 EMAIL_REMETENTE    = os.getenv("EMAIL_REMETENTE",    "o_teu_email@gmail.com")
 EMAIL_PASSWORD     = os.getenv("EMAIL_PASSWORD",     "a_tua_app_password")
 EMAIL_DESTINATARIO = os.getenv("EMAIL_DESTINATARIO", EMAIL_REMETENTE)
-INTERVALO_HORAS    = int(os.getenv("INTERVALO_HORAS", "24"))
+INTERVALO_HORAS    = int(os.getenv("INTERVALO_HORAS", "48"))
 DATABASE_URL       = os.getenv("DATABASE_URL", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 SCRAPERAPI_KEY     = os.getenv("SCRAPERAPI_KEY", "")
@@ -1244,14 +1244,249 @@ def scrape_kwportugal(p):
         time.sleep(random.uniform(2,4))
     return res,pags
 
+# ============================================================
+# SCRAPER GENÉRICO PARA TODAS AS IMOBILIÁRIAS
+# ============================================================
+
+def scrape_generico(nome, urls, perfil, seletores_extra=None):
+    """
+    Scraper genérico para imobiliárias — tenta ScraperAPI com render=true.
+    urls: lista de URLs a verificar (uma por zona/tipo)
+    """
+    resultados = []
+    for url in urls:
+        def _fetch(u=url):
+            if SCRAPERAPI_KEY:
+                api = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={requests.utils.quote(u)}&render=true&wait=3000"
+                r = requests.get(api, timeout=60, headers=random_headers())
+            else:
+                r = requests.get(u, headers=random_headers(), timeout=15)
+            return _api_scrape_html(r.text, u, nome, seletores_extra)
+        try:
+            items = com_retry(_fetch, tentativas=2)
+            items = [i for i in items if validar(i, perfil)]
+            log.info(f"    {nome}: {len(items)} items de {url[:60]}")
+            resultados.extend(items)
+        except Exception as e:
+            log.error(f"  {nome}: {e}")
+        time.sleep(random.uniform(2, 4))
+    return resultados, 1
+
+def _api_scrape_html(html, base_url, fonte, extra_sels=None):
+    """Extrai imóveis de HTML usando seletores CSS."""
+    soup = BeautifulSoup(html, "html.parser")
+    items = []
+    sels = (extra_sels or []) + [
+        "article", ".property", ".card", ".imovel", ".listing-item",
+        "[class*='property-card']", "[class*='listing-card']",
+        "[class*='result-item']", "[class*='property-item']",
+    ]
+    zona = "Algarve"
+    # Tentar determinar zona pelo URL
+    for slug, label in TODAS_AS_ZONAS.items():
+        if slug in base_url.lower():
+            zona = label; break
+
+    for sel in sels:
+        found = soup.select(sel)
+        for it in found:
+            lt  = it.select_one("a[href]")
+            pt  = it.select_one("[class*='price'],[class*='preco'],.price,.preco")
+            tt  = it.select_one("h1,h2,h3,h4,[class*='title'],[class*='name']")
+            img = it.select_one("img[src]")
+            if not lt or not lt.get("href"): continue
+            href = lt.get("href","")
+            link = href if href.startswith("http") else base_url.split("/")[0]+"//"+base_url.split("/")[2]+href
+            titulo = tt.get_text(strip=True) if tt else fonte
+            preco  = pt.get_text(strip=True) if pt else "N/D"
+            imagem = img.get("src") or img.get("data-src","") if img else None
+            item = fazer_item(link, titulo, preco, fonte, zona, imagem)
+            items.append(item)
+        if items: break
+    return items
+
+# ── REDES NACIONAIS/INTERNACIONAIS ───────────────────────
+
+def scrape_coldwell(p):
+    urls=[f"https://www.coldwellbanker.pt/imoveis?transacao=compra&distrito=faro&preco_max={p['preco_max']}&quartos_min={p['quartos_min']}"]
+    return scrape_generico("Coldwell Banker", urls, p)
+
+def scrape_sothebys(p):
+    urls=[f"https://www.sothebysrealty.pt/imoveis/compra?preco_max={p['preco_max']}&distrito=faro"]
+    return scrape_generico("Sotheby's", urls, p)
+
+def scrape_iad(p):
+    urls=[f"https://www.iadfrance.pt/comprar/apartamento/algarve?prix_max={p['preco_max']}",
+          f"https://www.iadfrance.pt/comprar/moradia/algarve?prix_max={p['preco_max']}"]
+    return scrape_generico("IAD Portugal", urls, p)
+
+def scrape_fineandcountry(p):
+    urls=[f"https://www.fineandcountry.com/pt/imoveis-para-venda/algarve?max_price={p['preco_max']}"]
+    return scrape_generico("Fine & Country", urls, p)
+
+def scrape_century21(p):
+    urls=[f"https://www.century21.pt/imoveis/?local=faro&tipo=comprar&preco_max={p['preco_max']}&quartos={p['quartos_min']}"]
+    return scrape_generico("Century 21", urls, p)
+
+def scrape_chavanova(p):
+    urls=[f"https://www.chavanova.pt/imoveis?distrito=faro&tipo=venda&preco_max={p['preco_max']}"]
+    return scrape_generico("Chave Nova", urls, p)
+
+def scrape_arcada(p):
+    urls=[f"https://www.arcada.com.pt/imoveis?zona=algarve&tipo=venda&preco_max={p['preco_max']}"]
+    return scrape_generico("Arcada Imobiliária", urls, p)
+
+# ── ALGARVE TODA A REGIÃO ────────────────────────────────
+
+def scrape_villaskey(p):
+    urls=[f"https://www.villaskey.com/venda?preco_max={p['preco_max']}&zona=algarve"]
+    return scrape_generico("Villas Key", urls, p)
+
+def scrape_dils(p):
+    urls=[f"https://www.dils.pt/imoveis?tipo=venda&zona=algarve&preco_max={p['preco_max']}"]
+    return scrape_generico("Dils Portugal", urls, p)
+
+def scrape_buyme(p):
+    urls=[f"https://www.buymeproperty.pt/comprar?preco_max={p['preco_max']}&quartos_min={p['quartos_min']}"]
+    return scrape_generico("BuyMe Property", urls, p)
+
+def scrape_algarveproperty(p):
+    urls=[f"https://www.algarveproperty.com/properties-for-sale?max_price={p['preco_max']}&bedrooms={p['quartos_min']}"]
+    return scrape_generico("Algarve Property", urls, p)
+
+def scrape_nurisimo(p):
+    urls=[f"https://www.nurisimo.com/venda?preco_max={p['preco_max']}"]
+    return scrape_generico("Nurisimo", urls, p)
+
+def scrape_goldenproperties(p):
+    urls=[f"https://www.goldenproperties.pt/imoveis?tipo=venda&preco_max={p['preco_max']}"]
+    return scrape_generico("Golden Properties", urls, p)
+
+def scrape_algarverealestate(p):
+    urls=[f"https://www.algarverealestate.com/properties-for-sale?max_price={p['preco_max']}&bedrooms={p['quartos_min']}"]
+    return scrape_generico("Algarve Real Estate", urls, p)
+
+def scrape_espacosalgarve(p):
+    urls=[f"https://www.espacos-algarve.com/comprar?preco_max={p['preco_max']}"]
+    return scrape_generico("Espaços Algarve", urls, p)
+
+def scrape_redereal(p):
+    urls=[f"https://www.redereal.com/imoveis?tipo=venda&zona=algarve&preco_max={p['preco_max']}"]
+    return scrape_generico("Rede Real", urls, p)
+
+def scrape_dalmaportuguesa(p):
+    urls=[f"https://www.dalmaportuguesa.com/imoveis?preco_max={p['preco_max']}"]
+    return scrape_generico("D'Alma Portuguesa", urls, p)
+
+def scrape_vaprealestate(p):
+    urls=[f"https://www.vaprealestate.com/properties?max_price={p['preco_max']}&bedrooms={p['quartos_min']}"]
+    return scrape_generico("VAP Real Estate", urls, p)
+
+def scrape_tripalgarve(p):
+    urls=[f"https://www.tripalgarve.com/properties-for-sale?max_price={p['preco_max']}"]
+    return scrape_generico("Tripalgarve", urls, p)
+
+def scrape_algarvedream(p):
+    urls=[f"https://www.algarvedreamproperty.com/for-sale?max_price={p['preco_max']}"]
+    return scrape_generico("Algarve Dream Property", urls, p)
+
+# ── BARLAVENTO ───────────────────────────────────────────
+
+def scrape_mimosa(p):
+    urls=[f"https://www.mimosaproperties.com/properties-for-sale?max_price={p['preco_max']}&bedrooms={p['quartos_min']}"]
+    return scrape_generico("Mimosa Properties", urls, p)
+
+def scrape_algarveuniqueproperties(p):
+    urls=[f"https://www.algarveuniqueproperties.com/for-sale?max_price={p['preco_max']}"]
+    return scrape_generico("Algarve Unique Properties", urls, p)
+
+def scrape_boto(p):
+    urls=[f"https://www.botoproperties.com/properties-for-sale?max_price={p['preco_max']}&bedrooms={p['quartos_min']}"]
+    return scrape_generico("Boto Properties", urls, p)
+
+def scrape_vernon(p):
+    urls=[f"https://www.vernonalgarve.com/for-sale?max_price={p['preco_max']}&bedrooms={p['quartos_min']}"]
+    return scrape_generico("Vernon Algarve", urls, p)
+
+def scrape_sunpoint(p):
+    urls=[f"https://www.sunpointproperties.com/for-sale?max_price={p['preco_max']}&bedrooms={p['quartos_min']}"]
+    return scrape_generico("Sunpoint Properties", urls, p)
+
+def scrape_a1algarve(p):
+    urls=[f"https://www.a1-algarve.com/properties?max_price={p['preco_max']}&bedrooms={p['quartos_min']}"]
+    return scrape_generico("A1 Algarve", urls, p)
+
+# ── TRIÂNGULO DOURADO ────────────────────────────────────
+
+def scrape_qpsavills(p):
+    urls=[f"https://www.quintaproperty.com/property-for-sale?max_price={p['preco_max']}&beds={p['quartos_min']}"]
+    return scrape_generico("QP Savills", urls, p)
+
+def scrape_jppproperties(p):
+    urls=[f"https://www.jppproperties.com/buy?max_price={p['preco_max']}&bedrooms={p['quartos_min']}"]
+    return scrape_generico("JPP Properties", urls, p)
+
+def scrape_yourluxury(p):
+    urls=[f"https://www.yourluxuryproperty.pt/imoveis-para-venda?preco_max={p['preco_max']}"]
+    return scrape_generico("Your Luxury Property", urls, p)
+
+def scrape_barraprime(p):
+    urls=[f"https://www.barraprime.pt/imoveis-para-venda?preco_max={p['preco_max']}"]
+    return scrape_generico("Barra Prime", urls, p)
+
+def scrape_insidevillas(p):
+    urls=[f"https://www.inside-villas.com/for-sale?max_price={p['preco_max']}&bedrooms={p['quartos_min']}"]
+    return scrape_generico("Inside-Villas", urls, p)
+
+def scrape_cluttons(p):
+    urls=[f"https://www.cluttons.com/algarve/properties-for-sale?max_price={p['preco_max']}&bedrooms={p['quartos_min']}"]
+    return scrape_generico("Cluttons Algarve", urls, p)
+
+def scrape_chestertons(p):
+    urls=[f"https://www.chestertons.com/algarve/properties-for-sale?max_price={p['preco_max']}&bedrooms={p['quartos_min']}"]
+    return scrape_generico("Chestertons Algarve", urls, p)
+
+# ── SOTAVENTO ────────────────────────────────────────────
+
+def scrape_algarvemanta(p):
+    urls=[f"https://casa.sapo.pt/comprar-apartamentos/tavira/?precomax={p['preco_max']}",
+          f"https://casa.sapo.pt/comprar-moradias/tavira/?precomax={p['preco_max']}"]
+    return scrape_generico("Algarve Manta Properties", urls, p)
+
 SCRAPERS=[
+    # Portais agregadores (via ScraperAPI)
     ("Idealista",scrape_idealista),("Imovirtual",scrape_imovirtual),
     ("Casa SAPO",scrape_casasapo),("SuperCasa",scrape_supercasa),
+    # Sotavento — imobiliárias locais
     ("Casas do Sotavento",scrape_casasdosotavento),("AlgarVila",scrape_algarvila),
     ("Villas Tavira",scrape_villastavira),("Imocusto",scrape_imocusto),
     ("LNHouse",scrape_lnhouse),("Sortami",scrape_sortami),("Garvetur",scrape_garvetur),
+    ("Algarve Manta Properties",scrape_algarvemanta),
+    # Redes nacionais/internacionais
     ("Engel & Völkers",scrape_engelvoelkers),("ERA Imobiliária",scrape_era),
     ("RE/MAX",scrape_remax),("KW Portugal",scrape_kwportugal),
+    ("Coldwell Banker",scrape_coldwell),("Sotheby's",scrape_sothebys),
+    ("IAD Portugal",scrape_iad),("Fine & Country",scrape_fineandcountry),
+    ("Century 21",scrape_century21),("Chave Nova",scrape_chavanova),
+    ("Arcada Imobiliária",scrape_arcada),
+    # Algarve toda a região
+    ("Villas Key",scrape_villaskey),("Dils Portugal",scrape_dils),
+    ("BuyMe Property",scrape_buyme),("Algarve Property",scrape_algarveproperty),
+    ("Nurisimo",scrape_nurisimo),("Golden Properties",scrape_goldenproperties),
+    ("Algarve Real Estate",scrape_algarverealestate),
+    ("Espaços Algarve",scrape_espacosalgarve),("Rede Real",scrape_redereal),
+    ("D'Alma Portuguesa",scrape_dalmaportuguesa),("VAP Real Estate",scrape_vaprealestate),
+    ("Tripalgarve",scrape_tripalgarve),("Algarve Dream Property",scrape_algarvedream),
+    # Barlavento
+    ("Mimosa Properties",scrape_mimosa),
+    ("Algarve Unique Properties",scrape_algarveuniqueproperties),
+    ("Boto Properties",scrape_boto),("Vernon Algarve",scrape_vernon),
+    ("Sunpoint Properties",scrape_sunpoint),("A1 Algarve",scrape_a1algarve),
+    # Triângulo Dourado
+    ("QP Savills",scrape_qpsavills),("JPP Properties",scrape_jppproperties),
+    ("Your Luxury Property",scrape_yourluxury),("Barra Prime",scrape_barraprime),
+    ("Inside-Villas",scrape_insidevillas),("Cluttons Algarve",scrape_cluttons),
+    ("Chestertons Algarve",scrape_chestertons),
 ]
 
 # ============================================================
@@ -1962,11 +2197,11 @@ if __name__=="__main__":
     log.info(f"Dashboard em http://localhost:{PORT}")
     verificar()
     # Corre uma vez por dia às 08:00 — poupa pedidos ScraperAPI
-    schedule.every().day.at("08:00").do(verificar)
+    schedule.every(48).hours.do(verificar)  # a cada 2 dias
     schedule.every().monday.at("08:00").do(enviar_resumo_semanal)
     schedule.every().day.at("09:00").do(verificar_scrapers_com_falha)
     schedule.every().day.at("20:00").do(verificar_limite_scraperapi)
-    schedule.every().day.at("08:30").do(geocodificar_existentes)
+    schedule.every(48).hours.do(geocodificar_existentes)
     log.info("A monitorizar. Ctrl+C para parar.\n")
     while True: schedule.run_pending(); time.sleep(60)
 "# v4.1" 
