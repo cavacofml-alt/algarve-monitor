@@ -983,24 +983,20 @@ def paginar_requests(url_tpl, parse_fn):
     return todos,pag
 
 def paginar_scraperapi(url_tpl, parse_fn):
-    """Usa ScraperAPI para contornar bloqueios. Fallback para requests se não houver key."""
+    """Usa rotação de proxies (ScraperAPI/ZenRows/ScrapingBee) para contornar bloqueios."""
     todos=[]; pag=1
     for pag in range(1,MAX_PAGINAS+1):
         url=url_tpl.format(page=pag)
         def _fetch(u=url):
-            if SCRAPERAPI_KEY:
-                api_url=f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={requests.utils.quote(u)}&render=true"
-                r=requests.get(api_url,timeout=45,headers=random_headers())
-            else:
-                r=requests.get(u,headers=random_headers(),timeout=15)
+            r=proxied_get(u, render=False)
             return parse_fn(r.text)
         try:
             items=com_retry(_fetch)
-            log.info(f"    scraperapi pag {pag}: {len(items)} items")
+            log.info(f"    proxy pag {pag}: {len(items)} items")
             if not items: break
             todos.extend(items); time.sleep(random.uniform(1,2))
         except Exception as e:
-            log.error(f"  scraperapi pag {pag}: {e}"); break
+            log.error(f"  proxy pag {pag}: {e}"); break
     return todos,pag
 
 def paginar_selenium(url_tpl,parse_fn):
