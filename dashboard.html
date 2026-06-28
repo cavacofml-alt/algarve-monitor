@@ -1344,7 +1344,10 @@ async function carregarSaude(){
             </div>
             <span style="font-size:10px;color:\${cor};font-weight:700">\${taxaSucesso}%</span>
           </div>
-          <div style="font-size:10px;color:var(--g400);margin-top:4px">Última: \${(s.ultima_exec||'N/D').slice(0,16)}</div>
+          <div style="font-size:10px;color:var(--g400);margin-top:4px">
+            Última: \${(s.ultima_exec||'N/D').slice(0,16)}
+            \${s.avg_ms?\`· \${Math.round(s.avg_ms/1000*10)/10}s\`:''}
+          </div>
         </div>\`;
       }).join('')}
     </div>\`;

@@ -22,6 +22,29 @@ from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from bs4 import BeautifulSoup
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="bs4")
+
+def safe_soup(html, fonte="?"):
+    """Parse HTML com validação — evita MarkupResemblesLocatorWarning."""
+    if not html:
+        log.debug(f"  [{fonte}] HTML vazio")
+        return None
+    if not isinstance(html, str):
+        log.debug(f"  [{fonte}] HTML não é string: {type(html)}")
+        return None
+    # Detecta se é URL ou caminho de ficheiro em vez de HTML
+    stripped = html.strip()
+    if stripped.startswith(("http://","https://","/","./","../")) and len(stripped) < 500:
+        log.warning(f"  [{fonte}] Recebeu URL em vez de HTML: {stripped[:80]}")
+        return None
+    if len(stripped) < 100:
+        log.debug(f"  [{fonte}] HTML demasiado curto: {repr(stripped[:50])}")
+        return None
+    if "<" not in stripped:
+        log.warning(f"  [{fonte}] Sem tags HTML: {repr(stripped[:80])}")
+        return None
+    return BeautifulSoup(html, "html.parser")
 from flask import (Flask, render_template_string, jsonify, request,
                    session, redirect, url_for, make_response)
 # Playwright replaces Selenium for better JS rendering
@@ -352,6 +375,17 @@ def init_db():
                     nota        TEXT DEFAULT '',
                     avaliacao   INTEGER CHECK(avaliacao BETWEEN 1 AND 5),
                     criado_em   TIMESTAMP DEFAULT NOW()
+                );
+                CREATE TABLE IF NOT EXISTS scraper_stats (
+                    id          SERIAL PRIMARY KEY,
+                    fonte       TEXT NOT NULL,
+                    perfil_nome TEXT,
+                    started_at  TIMESTAMP DEFAULT NOW(),
+                    duration_ms INTEGER DEFAULT 0,
+                    items       INTEGER DEFAULT 0,
+                    success     BOOLEAN DEFAULT FALSE,
+                    proxy       TEXT,
+                    erro        TEXT
                 );
                 CREATE TABLE IF NOT EXISTS perfis_config (
                     id           SERIAL PRIMARY KEY,
@@ -1244,7 +1278,9 @@ def paginar_selenium(url_tpl,parse_fn):
     return todos,pag
 
 def _parse_generic(html,base,fonte,zona):
-    soup=BeautifulSoup(html,"html.parser"); items=[]
+    soup=safe_soup(html); 
+    if not soup: return []
+    items=[]
     for sel in [".property","article",".imovel","[class*='property-card']"]:
         found=soup.select(sel)
         for it in found:
@@ -1275,7 +1311,9 @@ def scrape_idealista(perfil):
             tpl=(f"https://www.idealista.pt/comprar-casas/{zs}/{filtro_tipo}/"
                  f"?preco-max={perfil['preco_max']}&quartos-min={perfil['quartos_min']}&pagina={{page}}")
             def parse(html,tl=tl,zl=zl):
-                soup=BeautifulSoup(html,"html.parser"); its=[]
+                soup=safe_soup(html); 
+                if not soup: return its
+                its=[]
                 for it in soup.select("article.item"):
                     lt=it.select_one("a.item-link"); pt=it.select_one(".item-price")
                     tt=it.select_one(".item-title"); img=it.select_one("img")
@@ -1299,7 +1337,9 @@ def scrape_imovirtual(perfil):
             tpl=(f"https://www.imovirtual.com/comprar/{tiv}/{zs}/"
                  f"?priceMax={perfil['preco_max']}&roomsMin={perfil['quartos_min']}&nrAdsPerPage=36&page={{page}}")
             def parse(html,tl=tl,zl=zl):
-                soup=BeautifulSoup(html,"html.parser"); its=[]
+                soup=safe_soup(html); 
+                if not soup: return its
+                its=[]
                 for it in soup.select("article[data-cy='listing-item']"):
                     lt=it.select_one("a"); pt=it.select_one("[data-cy='listing-item-price']")
                     tt=it.select_one("[data-cy='listing-item-title']"); img=it.select_one("img")
@@ -1323,7 +1363,9 @@ def scrape_casasapo(perfil):
             tpl=(f"https://casa.sapo.pt/comprar-{tsk}/{zs}/"
                  f"?precomax={perfil['preco_max']}&tipologia={tips}&pn={{page}}")
             def parse(html,tl=tl,zl=zl):
-                soup=BeautifulSoup(html,"html.parser"); its=[]
+                soup=safe_soup(html); 
+                if not soup: return its
+                its=[]
                 for it in soup.select(".property-info-content,.searchResultProperty"):
                     lt=it.select_one("a"); pt=it.select_one(".property-price,.price")
                     tt=it.select_one(".property-title,h2"); img=it.select_one("img")
@@ -1350,7 +1392,9 @@ def scrape_supercasa(perfil):
             tpl=(f"https://supercasa.pt/comprar-casas/{zs}/com-{tipo_sc2}/"
                  f"?preco-max={perfil['preco_max']}&quartos-min={perfil['quartos_min']}&pagina={{page}}")
             def parse(html,tl=tl,zl=zl):
-                soup=BeautifulSoup(html,"html.parser"); its=[]
+                soup=safe_soup(html); 
+                if not soup: return its
+                its=[]
                 for it in soup.select("[data-id],.property-item,article"):
                     lt=it.select_one("a"); pt=it.select_one(".price,[class*='price']")
                     tt=it.select_one("h2,h3,[class*='title']"); img=it.select_one("img")
@@ -1367,7 +1411,8 @@ def scrape_supercasa(perfil):
 def _api_scrape(url_tpl, base, fonte, zona, extra_sels=None):
     """Usa ScraperAPI com render=true para sites com JavaScript."""
     def parse(html):
-        soup = BeautifulSoup(html, "html.parser")
+        soup = safe_soup(html)
+        if not soup: return []
         items = []
         # Seletores genéricos + específicos por fonte
         sels = [".property",".card","article",".imovel",
@@ -1537,7 +1582,8 @@ def _api_scrape_html(html, base_url, fonte, extra_sels=None):
     if "<html" not in html.lower() and "<div" not in html.lower():
         log.debug(f"  {fonte}: resposta inválida (não é HTML)")
         return []
-    soup = BeautifulSoup(html, "html.parser")
+    soup = safe_soup(html)
+    if not soup: return []
     items = []
     sels = (extra_sels or []) + [
         "article", ".property", ".card", ".imovel", ".listing-item",
@@ -1865,6 +1911,16 @@ def correr_scraper(args):
         log.error(f"    ❌ {nome}: {e} ({tempo}ms)")
         anuncios = []
     registar_log_scraper(nome, perfil["nome"], total, 0, pags, erros, tempo)
+    # Also write to scraper_stats for the health dashboard
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO scraper_stats(fonte, perfil_nome, duration_ms, items, success, erro)
+                    VALUES(%s,%s,%s,%s,%s,%s)
+                """, (nome, perfil["nome"], tempo, total, total>0, erros or None))
+            conn.commit()
+    except Exception: pass
     return anuncios
 
 def verificar_perfil(perfil):
@@ -2476,17 +2532,20 @@ def api_saude():
         with get_db() as conn:
             with conn.cursor(row_factory=psycopg_rows.dict_row) as cur:
                 cur.execute("""
-                    SELECT fonte, perfil_nome,
-                        MAX(executado_em)::TEXT ultima_exec,
-                        SUM(total) total_imoveis,
-                        SUM(novos) total_novos,
+                    SELECT
+                        sl.fonte, sl.perfil_nome,
+                        MAX(sl.executado_em)::TEXT ultima_exec,
+                        SUM(sl.total) total_imoveis,
                         COUNT(*) total_rondas,
-                        COUNT(*) FILTER (WHERE erros != '' AND erros IS NOT NULL) rondas_com_erro,
-                        AVG(total) media_imoveis
-                    FROM scraper_logs
-                    WHERE executado_em > NOW() - INTERVAL '7 days'
-                    GROUP BY fonte, perfil_nome
-                    ORDER BY fonte
+                        COUNT(*) FILTER (WHERE sl.erros != '' AND sl.erros IS NOT NULL) rondas_com_erro,
+                        ROUND(AVG(ss.duration_ms)) avg_ms,
+                        ROUND(100.0 * COUNT(*) FILTER (WHERE ss.success=TRUE) / NULLIF(COUNT(*),0)) taxa_sucesso
+                    FROM scraper_logs sl
+                    LEFT JOIN scraper_stats ss ON ss.fonte=sl.fonte
+                        AND ss.started_at::DATE = sl.executado_em::DATE
+                    WHERE sl.executado_em > NOW() - INTERVAL '7 days'
+                    GROUP BY sl.fonte, sl.perfil_nome
+                    ORDER BY sl.fonte
                 """)
                 scrapers = [dict(r) for r in cur.fetchall()]
         # Add proxy stats
@@ -2645,7 +2704,7 @@ if __name__=="__main__":
         # Geocodifica imóveis existentes em background
         threading.Thread(target=geocodificar_existentes, daemon=True).start()
     else: log.warning("DATABASE_URL não definida!")
-    log.info(f"Login: {DASHBOARD_USERNAME} / {DASHBOARD_PASSWORD}")
+    log.info(f"Login configurado: {DASHBOARD_USERNAME} (password definida)")
     log.info(f"{len(SCRAPERS)} fontes | {len(PERFIS)} perfil(is) | cada {INTERVALO_HORAS}h")
     def run_server():
         try:
