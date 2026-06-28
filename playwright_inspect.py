@@ -1,258 +1,289 @@
 #!/usr/bin/env python3
 """
-Playwright XHR Capture — encontra APIs internas de SPAs
-========================================================
-Abre cada site com browser real, captura todas as requisições
-XHR/fetch e identifica endpoints de imóveis automaticamente.
+Playwright Inspector v3 — Estratégia por site
+==============================================
+Fase 1: Abre homepage, descobre link de listagem automaticamente.
+Fase 2: Abre página de listagem, captura XHR/JSON, extrai imóveis.
 
-Corre na Consola do Railway: python3 /app/playwright_inspect.py
+python3 /app/playwright_inspect.py
 """
 import json, time, re, os
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
-try:
-    from playwright.sync_api import sync_playwright
-    PLAYWRIGHT_OK = True
-except ImportError:
-    PLAYWRIGHT_OK = False
-    print("❌ Playwright não instalado. Corre: pip install playwright && playwright install chromium")
-    exit(1)
+from playwright.sync_api import sync_playwright
+from bs4 import BeautifulSoup
 
-# Palavras-chave que indicam endpoint de imóveis
-KEYWORDS = ["propert","imovel","listing","house","villa","apartment","sale","buy",
-            "search","real-estate","estate","api","graphql","_next/data"]
+CHROMIUM = "/usr/bin/chromium"
+LAUNCH_ARGS = ["--no-sandbox","--disable-dev-shm-usage","--disable-gpu",
+               "--disable-blink-features=AutomationControlled"]
 
-def captura_xhr(nome, url, wait_ms=8000):
-    """
-    Abre o site com Playwright, captura todas as requisições XHR/fetch
-    e retorna as que parecem ser de imóveis.
-    """
-    resultado = {
-        "nome": nome,
-        "url": url,
-        "apis_encontradas": [],
-        "json_responses": [],
-        "framework": None,
-        "title": "",
-    }
+# Palavras-chave para encontrar links de listagem
+LISTING_KEYWORDS = [
+    "imoveis","imóveis","imovel","imóvel",
+    "properties","property","for-sale","for_sale","forsale",
+    "buy","sale","venda","comprar","listings","listing",
+    "houses","casas","apartamentos","moradias","villas",
+]
 
-    with sync_playwright() as p:
-        # Usa system chromium (/usr/bin/chromium) — confirmado a funcionar
-        launch_args = [
-            "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
-            "--disable-blink-features=AutomationControlled",
-            "--window-size=1920,1080",
-        ]
-        browser = p.chromium.launch(
-            headless=True,
-            executable_path="/usr/bin/chromium",
-            args=launch_args
-        )
-        ctx = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            viewport={"width":1920,"height":1080},
-            locale="pt-PT",
-        )
-        page = ctx.new_page()
+# Palavras-chave para APIs de imóveis
+API_KEYWORDS = [
+    "/api/", "graphql", "search", "listing", "property",
+    "_next/data", "imovel", "propert", "estate", "house",
+]
 
-        # Captura requests
-        requests_log = []
-        responses_log = []
+def criar_pagina(p):
+    ctx = p.chromium.launch(
+        headless=True, executable_path=CHROMIUM, args=LAUNCH_ARGS
+    ).new_context(
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        viewport={"width":1920,"height":1080},
+        locale="pt-PT",
+    )
+    return ctx, ctx.new_page()
 
-        def on_request(req):
-            u = req.url
-            if any(k in u.lower() for k in KEYWORDS) and req.resource_type in ["xhr","fetch","document"]:
-                requests_log.append({
-                    "url": u, "method": req.method,
-                    "type": req.resource_type,
-                    "headers": dict(req.headers),
-                })
+def descobrir_url_listagem(page, base_url):
+    """Analisa a homepage e encontra o link de listagem de imóveis."""
+    try:
+        page.goto(base_url, wait_until="domcontentloaded", timeout=20000)
+        page.wait_for_timeout(2000)
+    except Exception as e:
+        return None, f"Erro ao abrir homepage: {e}"
 
-        def on_response(resp):
+    # Procura links com keywords
+    try:
+        links = page.evaluate("""() => {
+            return Array.from(document.querySelectorAll('a[href]'))
+                .map(a => ({href: a.href, text: a.innerText.trim().toLowerCase()}))
+                .filter(a => a.href && a.href.startsWith('http'));
+        }""")
+    except:
+        return None, "Não foi possível extrair links"
+
+    keywords = LISTING_KEYWORDS
+    # Score cada link
+    scored = []
+    for l in links:
+        href = l["href"].lower()
+        text = l["text"]
+        score = 0
+        for k in keywords:
+            if k in href: score += 2
+            if k in text: score += 1
+        # Penaliza links de redes sociais e páginas de contato
+        if any(x in href for x in ["facebook","instagram","linkedin","twitter","contact","about","sobre","gdpr","privacy","blog"]):
+            score -= 5
+        if score > 0:
+            scored.append((score, l["href"], text[:40]))
+
+    scored.sort(reverse=True)
+    if scored:
+        return scored[0][1], None
+    return None, "Nenhum link de listagem encontrado"
+
+def inspecionar_listagem(page, url):
+    """Abre página de listagem e captura XHR/JSON."""
+    apis = []
+    jsons = []
+
+    def on_response(resp):
+        try:
+            ct = resp.headers.get("content-type","").lower()
             u = resp.url
-            ct = resp.headers.get("content-type","")
-            # Captura respostas JSON que parecem ser de imóveis
-            if "json" in ct and any(k in u.lower() for k in KEYWORDS):
+            if "json" in ct:
                 try:
                     body = resp.json()
                     size = len(str(body))
-                    if size > 100:
-                        responses_log.append({
-                            "url": u,
-                            "status": resp.status,
-                            "size": size,
-                            "preview": str(body)[:200],
-                        })
+                    if size > 200 and any(k in u.lower() for k in API_KEYWORDS):
+                        jsons.append({"url":u,"status":resp.status,
+                                      "size":size,"preview":str(body)[:300]})
                 except: pass
-
-        page.on("request", on_request)
-        page.on("response", on_response)
-
-        try:
-            page.goto(url, wait_until="networkidle", timeout=30000)
-        except Exception as e:
-            try:
-                page.goto(url, wait_until="domcontentloaded", timeout=20000)
-            except Exception as e2:
-                print(f"  ❌ Erro ao carregar: {e2}")
-                browser.close()
-                return resultado
-
-        # Espera adicional para AJAX
-        page.wait_for_timeout(wait_ms)
-
-        # Scroll para trigger lazy loading
-        try:
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight/2)")
-            page.wait_for_timeout(2000)
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            page.wait_for_timeout(2000)
+            # Regista todos os requests de API
+            if any(k in u.lower() for k in API_KEYWORDS) and resp.status == 200:
+                if u not in [a["url"] for a in apis]:
+                    apis.append({"url":u,"status":resp.status,
+                                 "type":resp.request.resource_type})
         except: pass
 
-        resultado["title"] = page.title()
-        html = page.content()
+    page.on("response", on_response)
 
-        # Deteta framework
-        if "_next/static" in html or "__next" in html:
-            resultado["framework"] = "Next.js"
-        elif "nuxt" in html.lower():
-            resultado["framework"] = "Nuxt.js"
-        elif "__reactfiber" in html.lower():
-            resultado["framework"] = "React"
-        elif "ng-version" in html.lower():
-            resultado["framework"] = "Angular"
+    try:
+        page.goto(url, wait_until="networkidle", timeout=30000)
+    except:
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=20000)
+            page.wait_for_timeout(5000)
+        except Exception as e:
+            return {"erro": str(e), "apis":[], "jsons":[]}
 
-        # Extrai imóveis do HTML renderizado
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(html, "html.parser")
-        precos = [e.get_text(strip=True) for e in soup.find_all(True)
-                  if "€" in e.get_text() and 5<len(e.get_text(strip=True))<30
-                  and any(c.isdigit() for c in e.get_text())][:5]
-        cards = 0
-        for s in ["article","[class*='property']","[class*='listing']","[class*='card']"]:
-            cards = max(cards, len(soup.select(s)))
+    # Scroll para triggerar lazy loading
+    try:
+        for pos in [0.3, 0.6, 1.0]:
+            page.evaluate(f"window.scrollTo(0, document.body.scrollHeight * {pos})")
+            page.wait_for_timeout(1500)
+    except: pass
 
-        resultado["precos_no_html"] = precos
-        resultado["cards_no_html"] = cards
-        resultado["html_size"] = len(html)
-        resultado["apis_encontradas"] = requests_log
-        resultado["json_responses"] = responses_log
+    # Extrai imóveis do HTML renderizado
+    html = page.content()
+    soup = BeautifulSoup(html, "html.parser")
 
-        # Testa _next/data se for Next.js
-        if resultado["framework"] == "Next.js":
-            try:
-                # Encontra o build ID no HTML
-                build_id = re.search(r'"buildId":"([^"]+)"', html)
-                if build_id:
-                    bid = build_id.group(1)
-                    resultado["nextjs_build_id"] = bid
-                    # Testa endpoints _next/data comuns
-                    test_paths = ["/","/imoveis","/properties","/for-sale","/venda","/comprar","/search"]
-                    for path in test_paths:
-                        next_url = f"{url.rstrip('/')}/_next/data/{bid}{path}.json"
-                        try:
-                            r = ctx.request.get(next_url)
-                            if r.status == 200:
-                                resultado["nextjs_data_url"] = next_url
-                                resultado["nextjs_data_preview"] = r.text()[:200]
-                                print(f"  🎯 Next.js data: {next_url}")
-                                break
-                        except: pass
-            except: pass
+    precos = [e.get_text(strip=True) for e in soup.find_all(True)
+              if "€" in e.get_text() and 5<len(e.get_text(strip=True))<30
+              and any(c.isdigit() for c in e.get_text())][:5]
 
-        browser.close()
+    cards = 0
+    melhor_sel = None
+    for s in ["article","[class*='property']","[class*='listing']",
+              "[class*='card']","[class*='item']",".property","li[class]"]:
+        n = len(soup.select(s))
+        if n > cards:
+            cards = n; melhor_sel = s
 
+    # Links de imóveis
+    links_imoveis = list(set([
+        a.get("href","") for a in soup.select("a[href]")
+        if any(k in a.get("href","").lower() for k in
+               ["property","imovel","casa","villa","apartamento","moradia"])
+        and len(a.get("href","")) > 15
+    ]))[:5]
+
+    return {
+        "titulo": page.title(),
+        "url_final": page.url,
+        "html_size": len(html),
+        "precos": precos,
+        "cards": cards,
+        "melhor_selector": melhor_sel,
+        "links_imoveis": links_imoveis,
+        "apis": apis[:10],
+        "jsons": jsons[:5],
+    }
+
+def inspecionar_site(nome, base_url, url_conhecida=None):
+    print(f"\n{'='*60}")
+    print(f"🔍 {nome}  —  {base_url}")
+    print(f"{'='*60}")
+
+    resultado = {"nome": nome, "base_url": base_url}
+
+    with sync_playwright() as p:
+        ctx, page = criar_pagina(p)
+
+        # Fase 1: Descobrir URL de listagem
+        if url_conhecida:
+            url_listagem = url_conhecida
+            print(f"  URL conhecida: {url_listagem}")
+        else:
+            print(f"  Fase 1: A descobrir URL de listagem...")
+            url_listagem, erro = descobrir_url_listagem(page, base_url)
+            if erro:
+                print(f"  ❌ {erro}")
+                resultado["erro_fase1"] = erro
+            else:
+                print(f"  ✅ URL encontrada: {url_listagem}")
+
+        resultado["url_listagem"] = url_listagem
+
+        # Fase 2: Inspecionar listagem
+        if url_listagem:
+            print(f"  Fase 2: A inspecionar listagem...")
+            info = inspecionar_listagem(page, url_listagem)
+            resultado.update(info)
+
+            print(f"  Título: {info.get('titulo','?')[:60]}")
+            print(f"  HTML: {info.get('html_size',0):,} chars | Cards: {info.get('cards',0)} [{info.get('melhor_selector','?')}]")
+            if info.get('precos'):
+                print(f"  Preços: {info['precos'][:3]}")
+            if info.get('links_imoveis'):
+                print(f"  Links imóveis: {info['links_imoveis'][:2]}")
+            if info.get('jsons'):
+                print(f"\n  📦 APIs JSON ({len(info['jsons'])}):")
+                for j in info['jsons']:
+                    print(f"    {j['url'][:70]}")
+                    print(f"    Preview: {j['preview'][:100]}")
+            elif info.get('apis'):
+                print(f"\n  📡 Requests API ({len(info['apis'])}):")
+                for a in info['apis'][:5]:
+                    print(f"    {a['url'][:70]}")
+            else:
+                print(f"  📡 Nenhuma API capturada")
+
+        ctx.browser.close()
+
+    # Diagnóstico
+    imoveis_encontrados = (resultado.get('cards',0) > 2 or
+                           len(resultado.get('precos',[])) > 1 or
+                           len(resultado.get('jsons',[])) > 0)
+    resultado["imoveis_encontrados"] = imoveis_encontrados
+
+    if imoveis_encontrados:
+        if resultado.get('jsons'):
+            estrategia = "API JSON direta"
+        elif resultado.get('cards',0) > 2:
+            estrategia = f"HTML scraping [{resultado.get('melhor_selector','?')}]"
+        else:
+            estrategia = "HTML scraping (preços)"
+        print(f"\n  🟢 IMÓVEIS ENCONTRADOS — Estratégia: {estrategia}")
+    else:
+        vercel = "vercel" in str(resultado.get('titulo','')).lower()
+        cf = "cloudflare" in str(resultado.get('titulo','')).lower()
+        if vercel:
+            print(f"\n  🔴 Vercel anti-bot — precisa de bypass")
+        elif cf:
+            print(f"\n  🔴 Cloudflare — precisa de bypass")
+        elif not url_listagem:
+            print(f"\n  🟡 URL de listagem não encontrada — rever manualmente")
+        else:
+            print(f"\n  🟡 Sem imóveis detetados — possível JS dinâmico ou URL errada")
+
+    resultado["estrategia"] = estrategia if imoveis_encontrados else (
+        "Vercel bypass" if "vercel" in str(resultado.get('titulo','')).lower() else
+        "Manual review"
+    )
     return resultado
 
 
-def analisar_resultado(r):
-    """Analisa e imprime o resultado de forma clara."""
-    print(f"\n{'='*60}")
-    print(f"🔍 {r['nome']}  —  {r['url']}")
-    print(f"{'='*60}")
-    print(f"  Título: {r.get('title','?')[:60]}")
-    print(f"  HTML: {r.get('html_size',0):,} chars | Framework: {r.get('framework','?')}")
-    print(f"  Cards no HTML: {r.get('cards_no_html',0)} | Preços: {r.get('precos_no_html',[])[:3]}")
-
-    # APIs capturadas
-    apis = r.get("apis_encontradas",[])
-    if apis:
-        print(f"\n  📡 Requests XHR/fetch ({len(apis)}):")
-        for a in apis[:8]:
-            print(f"    {a['method']} {a['url'][:80]}")
-    else:
-        print(f"  📡 Nenhum request XHR/fetch capturado")
-
-    # JSON responses
-    jsons = r.get("json_responses",[])
-    if jsons:
-        print(f"\n  📦 Respostas JSON ({len(jsons)}):")
-        for j in jsons[:5]:
-            print(f"    HTTP {j['status']} {j['url'][:70]}")
-            print(f"      Preview: {j['preview'][:100]}")
-    else:
-        print(f"  📦 Nenhuma resposta JSON de imóveis capturada")
-
-    # Next.js
-    if r.get("nextjs_data_url"):
-        print(f"\n  🎯 Next.js DATA URL: {r['nextjs_data_url']}")
-        print(f"     Preview: {r.get('nextjs_data_preview','')[:100]}")
-
-    # Conclusão
-    if r.get("json_responses") or r.get("nextjs_data_url"):
-        print(f"\n  ✅ API ENCONTRADA — scraping direto possível!")
-    elif r.get("precos_no_html") or r.get("cards_no_html",0) > 2:
-        print(f"\n  ✅ IMÓVEIS NO HTML — scraping com Playwright possível!")
-    elif r.get("apis_encontradas"):
-        print(f"\n  🟡 APIs capturadas mas sem JSON de imóveis — analisar manualmente")
-    else:
-        print(f"\n  🔴 Sem imóveis detetados — site pode requerer login ou estar vazio")
-
-
 SITES = [
-    ("D'Alma Portuguesa",  "https://www.dalmaportuguesa.com/imoveis"),
-    ("Vernon Algarve",     "https://www.vernonalgarve.com/for-sale"),
-    ("Sortami",            "https://www.sortami.pt/imoveis"),
-    ("Mimosa Properties",  "https://www.mimosaproperties.com/properties-for-sale"),
-    ("Algarve Dream",      "https://www.algarvedreamproperty.com/for-sale"),
-    ("Algarve Unique",     "https://www.algarveuniqueproperties.com/for-sale"),
-    ("Boto Properties",    "https://www.botoproperties.com/properties-for-sale"),
-    ("Sunpoint",           "https://www.sunpoint.pt/imoveis"),  # note: redirect to sunpoint.pt
-    ("Your Luxury Prop",   "https://www.yourluxuryproperty.pt/imoveis-para-venda"),
-    ("Barra Prime",        "https://www.barraprime.pt/imoveis-para-venda"),
-    ("Garvetur",           "https://garvetur.pt/imoveis/venda"),
+    # Sem URL conhecida — descobre automaticamente
+    ("D'Alma Portuguesa",  "https://www.dalmaportuguesa.com",   None),
+    ("Vernon Algarve",     "https://www.vernonalgarve.com",     None),
+    ("Sortami",            "https://www.sortami.pt",            None),
+    ("Mimosa Properties",  "https://www.mimosaproperties.com",  None),
+    ("Algarve Dream",      "https://www.algarvedreamproperty.com", None),
+    ("Algarve Unique",     "https://www.algarveuniqueproperties.com", None),
+    ("Boto Properties",    "https://www.botoproperties.com",    None),
+    ("Sunpoint",           "https://www.sunpoint.pt",           None),  # redirect
+    ("Your Luxury Prop",   "https://www.yourluxuryproperty.pt", None),
+    ("Barra Prime",        "https://www.barraprime.pt",         None),
+    ("Garvetur",           "https://www.garvetur.pt",           None),
 ]
 
 print("="*60)
-print(f"Playwright XHR Capture — {len(SITES)} sites")
+print(f"Playwright Inspector v3 — {len(SITES)} sites")
 print("="*60)
 
 all_results = []
-for nome, url in SITES:
+for nome, base, url in SITES:
     try:
-        print(f"\n⏳ {nome}...")
-        r = captura_xhr(nome, url)
-        analisar_resultado(r)
+        r = inspecionar_site(nome, base, url)
         all_results.append(r)
     except Exception as e:
         print(f"  ❌ {nome}: {e}")
-        all_results.append({"nome":nome,"url":url,"erro":str(e)})
-    time.sleep(2)
+        all_results.append({"nome":nome,"base_url":base,"erro":str(e),
+                             "imoveis_encontrados":False,"estrategia":"Erro"})
+    time.sleep(3)
 
-# Resumo
+# Tabela final
 print(f"\n{'='*60}")
-print("RESUMO")
-print("="*60)
+print("FICHA POR SITE")
+print(f"{'='*60}")
+print(f"{'Site':<25} {'URL Listagem':<35} {'Tech':<10} {'Estratégia'}")
+print("-"*90)
 for r in all_results:
-    nome = r.get("nome","?")
-    if r.get("json_responses") or r.get("nextjs_data_url"):
-        print(f"  🟢 {nome}: API JSON encontrada")
-    elif r.get("precos_no_html") or r.get("cards_no_html",0)>2:
-        print(f"  🟢 {nome}: Imóveis no HTML renderizado")
-    elif r.get("apis_encontradas"):
-        print(f"  🟡 {nome}: APIs capturadas, analisar")
-    else:
-        print(f"  🔴 {nome}: Sem resultados")
+    url_l = (r.get('url_listagem') or r.get('erro_fase1','?') or '')[:35]
+    fw = r.get('framework','?')[:10]
+    est = r.get('estrategia','?')[:30]
+    emoji = "🟢" if r.get('imoveis_encontrados') else "🔴"
+    print(f"  {emoji} {r['nome']:<23} {url_l:<35} {fw:<10} {est}")
 
 with open("/tmp/playwright_report.json","w") as f:
     json.dump(all_results, f, ensure_ascii=False, indent=2, default=str)
