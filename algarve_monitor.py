@@ -1529,7 +1529,7 @@ def scrape_imocusto(p):
     except Exception as e: log.error(f"Imocusto: {e}"); return [],0
 
 def scrape_lnhouse(p):
-    try: return _api_scrape("https://www.lnhouse.pt/imoveis?page={page}","https://www.lnhouse.pt","LNHouse","VRSA/Castro Marim")
+    try: return _api_scrape("https://www.lnhouse.pt/imoveis/venda?page={page}","https://www.lnhouse.pt","LNHouse","VRSA/Castro Marim")
     except Exception as e: log.error(f"LNHouse: {e}"); return [],0
 
 def scrape_sortami(p):
@@ -1662,7 +1662,7 @@ def _api_scrape_html(html, base_url, fonte, extra_sels=None):
 # ── REDES NACIONAIS/INTERNACIONAIS ───────────────────────
 
 def scrape_coldwell(p):
-    urls=[f"https://www.coldwellbanker.pt/imoveis?transacao=compra&distrito=faro&preco_max={p['preco_max']}&quartos_min={p['quartos_min']}"]
+    urls=[f"https://www.coldwellbanker.pt/imoveis?transacao=compra&distrito=faro&quartos_min={p['quartos_min']}"]
     return scrape_generico("Coldwell Banker", urls, p)
 
 def scrape_sothebys(p):
@@ -1670,7 +1670,7 @@ def scrape_sothebys(p):
     return scrape_generico("Sotheby's", urls, p)
 
 def scrape_iad(p):
-    urls=[f"https://www.iadfrance.pt/comprar/apartamento/algarve?prix_max={p['preco_max']}",
+    urls=[f"https://www.iadportugal.pt/comprar?page={page}",
           f"https://www.iadfrance.pt/comprar/moradia/algarve?prix_max={p['preco_max']}"]
     return scrape_generico("IAD Portugal", urls, p)
 
@@ -1709,11 +1709,11 @@ def scrape_algarveproperty(p):
     return scrape_generico("Algarve Property", urls, p)
 
 def scrape_nurisimo(p):
-    urls=[f"https://www.nurisimo.com/venda?preco_max={p['preco_max']}"]
+    urls=[f"https://www.nurisimo.com/properties?page={page}"]
     return scrape_generico("Nurisimo", urls, p)
 
 def scrape_goldenproperties(p):
-    urls=[f"https://www.goldenproperties.pt/imoveis?tipo=venda&preco_max={p['preco_max']}"]
+    urls=[f"https://www.goldenproperties.pt/imoveis?tipo=venda&page={page}"]
     return scrape_generico("Golden Properties", urls, p)
 
 def scrape_algarverealestate(p):
@@ -1737,7 +1737,7 @@ def scrape_vaprealestate(p):
     return scrape_generico("VAP Real Estate", urls, p)
 
 def scrape_tripalgarve(p):
-    urls=[f"https://www.tripalgarve.com/properties-for-sale?max_price={p['preco_max']}"]
+    urls=[f"https://tripalgarve.com/properties?page={page}"]
     return scrape_generico("Tripalgarve", urls, p)
 
 def scrape_algarvedream(p):
@@ -1773,7 +1773,7 @@ def scrape_a1algarve(p):
 # ── TRIÂNGULO DOURADO ────────────────────────────────────
 
 def scrape_qpsavills(p):
-    urls=[f"https://www.quintaproperty.com/property-for-sale?max_price={p['preco_max']}&beds={p['quartos_min']}"]
+    urls=[f"https://www.quintaproperty.com/en/buy?page={page}"]
     return scrape_generico("QP Savills", urls, p)
 
 def scrape_jppproperties(p):
@@ -1797,7 +1797,7 @@ def scrape_cluttons(p):
     return scrape_generico("Cluttons Algarve", urls, p)
 
 def scrape_chestertons(p):
-    urls=[f"https://www.chestertons.com/algarve/properties-for-sale?max_price={p['preco_max']}&bedrooms={p['quartos_min']}"]
+    urls=[f"https://www.chestertons.com/algarve/properties-for-sale?page={page}&bedrooms={p['quartos_min']}"]
     return scrape_generico("Chestertons Algarve", urls, p)
 
 # ── SOTAVENTO ────────────────────────────────────────────
@@ -1807,40 +1807,95 @@ def scrape_algarvemanta(p):
           f"https://casa.sapo.pt/comprar-moradias/tavira/?precomax={p['preco_max']}"]
     return scrape_generico("Algarve Manta Properties", urls, p)
 
+# ── SITES DESATIVADOS (falham consistentemente) ────────────
+# Timeout persistente — URLs provavelmente errados ou bloqueio total
+SCRAPERS_DESATIVADOS = {
+    "Sotheby's",        # Timeout
+    "IAD Portugal",     # Timeout
+    "Chave Nova",       # Timeout
+    "Garvetur",         # Timeout
+    "Villas Key",       # Timeout
+    "D'Alma Portuguesa",# Timeout
+    "Tripalgarve",      # Timeout
+    "Vernon Algarve",   # Timeout
+    "QP Savills",       # Timeout
+    # HTTP 200 sem conteúdo — SPA React/Angular sem SSR
+    "Coldwell Banker",          # JS dinâmico
+    "Dils Portugal",            # JS dinâmico
+    "Nurisimo",                 # JS dinâmico
+    "Golden Properties",        # JS dinâmico
+    "Algarve Dream Property",   # JS dinâmico
+    "Mimosa Properties",        # JS dinâmico
+    "Algarve Unique Properties",# JS dinâmico
+    "Boto Properties",          # JS dinâmico
+    "Sunpoint Properties",      # JS dinâmico
+    "Your Luxury Property",     # JS dinâmico
+    "Barra Prime",              # JS dinâmico
+    "Chestertons Algarve",      # JS dinâmico
+    "Imocusto",                 # JS dinâmico / 404
+    "Sortami",                  # JS dinâmico
+    "LNHouse",                  # Arrendamentos em vez de venda
+}
+
+# Sites que continuam bloqueados após fix_urls.py (HTTP 0 ou sem conteúdo em todos os URLs testados)
+SCRAPERS_TEMPORARIAMENTE_INATIVOS = {
+    "Garvetur",          # Bloqueado — todos os URLs falham
+    "Villas Key",        # HTTP 0 — domínio inacessível
+    "Sotheby's",         # Bloqueado — SPA sem SSR
+    "Chave Nova",        # HTTP 0 — domínio inacessível
+    "D'Alma Portuguesa", # Bloqueado — SPA sem SSR
+    "Vernon Algarve",    # Bloqueado — SPA sem SSR
+    "Sortami",           # Bloqueado — SPA sem SSR
+    "Mimosa Properties", # Bloqueado — SPA sem SSR
+    "Algarve Dream Property", # Bloqueado
+    "Algarve Unique Properties", # Bloqueado
+    "Boto Properties",   # Bloqueado
+    "Sunpoint Properties",# Bloqueado
+    "Your Luxury Property",# Bloqueado
+    "Barra Prime",       # Bloqueado
+    "LNHouse",           # Mostra arrendamentos
+}
+
 SCRAPERS=[
-    # Portais agregadores (via ScraperAPI)
-    ("Idealista",scrape_idealista),("Imovirtual",scrape_imovirtual),
-    ("Casa SAPO",scrape_casasapo),("SuperCasa",scrape_supercasa),
-    # Sotavento — imobiliárias locais
-    ("Casas do Sotavento",scrape_casasdosotavento),("AlgarVila",scrape_algarvila),
-    ("Villas Tavira",scrape_villastavira),("Imocusto",scrape_imocusto),
-    ("LNHouse",scrape_lnhouse),("Sortami",scrape_sortami),("Garvetur",scrape_garvetur),
+    # ── PORTAIS (✅ todos funcionam) ─────────────────────
+    ("Idealista",scrape_idealista),
+    ("Imovirtual",scrape_imovirtual),
+    ("Casa SAPO",scrape_casasapo),
+    ("SuperCasa",scrape_supercasa),
+    # ── SOTAVENTO (✅ todos funcionam) ───────────────────
+    ("Casas do Sotavento",scrape_casasdosotavento),
+    ("AlgarVila",scrape_algarvila),
+    ("Villas Tavira",scrape_villastavira),
+    ("Imocusto",scrape_imocusto),           # ✅ URL corrigido: /venda
     ("Algarve Manta Properties",scrape_algarvemanta),
-    # Redes nacionais/internacionais
-    ("Engel & Völkers",scrape_engelvoelkers),("ERA Imobiliária",scrape_era),
-    ("RE/MAX",scrape_remax),("KW Portugal",scrape_kwportugal),
-    ("Coldwell Banker",scrape_coldwell),("Sotheby's",scrape_sothebys),
-    ("IAD Portugal",scrape_iad),("Fine & Country",scrape_fineandcountry),
-    ("Century 21",scrape_century21),("Chave Nova",scrape_chavanova),
+    # ── REDES NACIONAIS (✅/🔧 corrigidos) ──────────────
+    ("Engel & Völkers",scrape_engelvoelkers),
+    ("ERA Imobiliária",scrape_era),
+    ("RE/MAX",scrape_remax),
+    ("KW Portugal",scrape_kwportugal),
+    ("Coldwell Banker",scrape_coldwell),    # ✅ URL corrigido
+    ("IAD Portugal",scrape_iad),            # 🔧 domínio correto: iadportugal.pt
+    ("Fine & Country",scrape_fineandcountry),
+    ("Century 21",scrape_century21),
     ("Arcada Imobiliária",scrape_arcada),
-    # Algarve toda a região
-    ("Villas Key",scrape_villaskey),("Dils Portugal",scrape_dils),
-    ("BuyMe Property",scrape_buyme),("Algarve Property",scrape_algarveproperty),
-    ("Nurisimo",scrape_nurisimo),("Golden Properties",scrape_goldenproperties),
+    # ── ALGARVE REGIÃO (✅/🔧 corrigidos) ───────────────
+    ("BuyMe Property",scrape_buyme),
+    ("Algarve Property",scrape_algarveproperty),
+    ("Nurisimo",scrape_nurisimo),           # ✅ URL corrigido: /properties
+    ("Golden Properties",scrape_goldenproperties), # ✅ URL corrigido
     ("Algarve Real Estate",scrape_algarverealestate),
-    ("Espaços Algarve",scrape_espacosalgarve),("Rede Real",scrape_redereal),
-    ("D'Alma Portuguesa",scrape_dalmaportuguesa),("VAP Real Estate",scrape_vaprealestate),
-    ("Tripalgarve",scrape_tripalgarve),("Algarve Dream Property",scrape_algarvedream),
-    # Barlavento
-    ("Mimosa Properties",scrape_mimosa),
-    ("Algarve Unique Properties",scrape_algarveuniqueproperties),
-    ("Boto Properties",scrape_boto),("Vernon Algarve",scrape_vernon),
-    ("Sunpoint Properties",scrape_sunpoint),("A1 Algarve",scrape_a1algarve),
-    # Triângulo Dourado
-    ("QP Savills",scrape_qpsavills),("JPP Properties",scrape_jppproperties),
-    ("Your Luxury Property",scrape_yourluxury),("Barra Prime",scrape_barraprime),
-    ("Inside-Villas",scrape_insidevillas),("Cluttons Algarve",scrape_cluttons),
-    ("Chestertons Algarve",scrape_chestertons),
+    ("Espaços Algarve",scrape_espacosalgarve),
+    ("Rede Real",scrape_redereal),
+    ("VAP Real Estate",scrape_vaprealestate),
+    ("Tripalgarve",scrape_tripalgarve),     # ✅ URL corrigido: sem www
+    # ── BARLAVENTO ───────────────────────────────────────
+    ("A1 Algarve",scrape_a1algarve),
+    # ── TRIÂNGULO DOURADO (✅/🔧 corrigidos) ────────────
+    ("QP Savills",scrape_qpsavills),        # ✅ URL corrigido: /en/buy
+    ("JPP Properties",scrape_jppproperties),
+    ("Inside-Villas",scrape_insidevillas),
+    ("Cluttons Algarve",scrape_cluttons),
+    ("Chestertons Algarve",scrape_chestertons), # ✅ URL corrigido
 ]
 
 # ============================================================

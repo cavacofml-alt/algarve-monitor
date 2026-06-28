@@ -157,16 +157,16 @@ SITES = [
         ("Engel & Völkers Faro",
          f"https://www.engelvoelkers.com/pt/en/search/?adType=BUY&country=PRT&city=faro&priceMax={PRECO_MAX}"),
         ("Coldwell Banker",
-         f"https://www.coldwellbanker.pt/imoveis?transacao=compra&distrito=faro&preco_max={PRECO_MAX}"),
-        ("Sotheby's",
+         "https://www.coldwellbanker.pt/imoveis?transacao=compra&distrito=faro"),
+        ("Sotheby's [BLOQUEADO]",
          f"https://www.sothebysrealty.pt/imoveis/compra?preco_max={PRECO_MAX}&distrito=faro"),
         ("IAD Portugal",
-         f"https://www.iadfrance.pt/comprar/apartamento/algarve?prix_max={PRECO_MAX}"),
+         "https://www.iadportugal.pt/comprar"),
         ("Fine & Country",
          f"https://www.fineandcountry.com/pt/imoveis-para-venda/algarve?max_price={PRECO_MAX}"),
         ("Century 21",
          f"https://www.century21.pt/imoveis/?local=faro&tipo=comprar&preco_max={PRECO_MAX}"),
-        ("Chave Nova",
+        ("Chave Nova [BLOQUEADO]",
          f"https://www.chavanova.pt/imoveis?distrito=faro&tipo=venda&preco_max={PRECO_MAX}"),
         ("Arcada Imobiliária",
          f"https://www.arcada.com.pt/imoveis?zona=algarve&tipo=venda&preco_max={PRECO_MAX}"),
@@ -174,9 +174,9 @@ SITES = [
 
     # ── ALGARVE TODA A REGIÃO ─────────────────────────────
     ("🌍 ALGARVE — TODA A REGIÃO", [
-        ("Garvetur",
+        ("Garvetur [BLOQUEADO]",
          f"https://www.garvetur.pt/imoveis/venda"),
-        ("Villas Key",
+        ("Villas Key [BLOQUEADO]",
          f"https://www.villaskey.com/venda?preco_max={PRECO_MAX}"),
         ("Dils Portugal",
          f"https://www.dils.pt/imoveis?tipo=venda&zona=algarve&preco_max={PRECO_MAX}"),
@@ -185,10 +185,10 @@ SITES = [
         ("Algarve Property",
          f"https://www.algarveproperty.com/properties-for-sale?max_price={PRECO_MAX}"),
         ("Nurisimo",
-         f"https://www.nurisimo.com/venda?preco_max={PRECO_MAX}"),
+         "https://www.nurisimo.com/properties"),
         ("Golden Properties",
-         f"https://www.goldenproperties.pt/imoveis?tipo=venda&preco_max={PRECO_MAX}"),
-        ("Sortami",
+         "https://www.goldenproperties.pt/imoveis?tipo=venda"),
+        ("Sortami [BLOQUEADO]",
          f"https://www.sortami.pt/imoveis?preco_max={PRECO_MAX}"),
         ("Algarve Real Estate",
          f"https://www.algarverealestate.com/properties-for-sale?max_price={PRECO_MAX}"),
@@ -196,27 +196,27 @@ SITES = [
          f"https://www.espacos-algarve.com/comprar?preco_max={PRECO_MAX}"),
         ("Rede Real",
          f"https://www.redereal.com/imoveis?tipo=venda&zona=algarve&preco_max={PRECO_MAX}"),
-        ("D'Alma Portuguesa",
+        ("D'Alma Portuguesa [BLOQUEADO]",
          f"https://www.dalmaportuguesa.com/imoveis?preco_max={PRECO_MAX}"),
         ("VAP Real Estate",
          f"https://www.vaprealestate.com/properties?max_price={PRECO_MAX}"),
         ("Tripalgarve",
-         f"https://www.tripalgarve.com/properties-for-sale?max_price={PRECO_MAX}"),
-        ("Algarve Dream Property",
+         "https://tripalgarve.com/properties"),
+        ("Algarve Dream Property [BLOQUEADO]",
          f"https://www.algarvedreamproperty.com/for-sale?max_price={PRECO_MAX}"),
     ]),
 
     # ── BARLAVENTO ───────────────────────────────────────
     ("🌊 BARLAVENTO", [
-        ("Mimosa Properties",
+        ("Mimosa Properties [BLOQUEADO]",
          f"https://www.mimosaproperties.com/properties-for-sale?max_price={PRECO_MAX}&bedrooms={QUARTOS_MIN}"),
-        ("Algarve Unique Properties",
+        ("Algarve Unique Properties [BLOQUEADO]",
          f"https://www.algarveuniqueproperties.com/for-sale?max_price={PRECO_MAX}"),
-        ("Boto Properties",
+        ("Boto Properties [BLOQUEADO]",
          f"https://www.botoproperties.com/properties-for-sale?max_price={PRECO_MAX}"),
-        ("Vernon Algarve",
+        ("Vernon Algarve [BLOQUEADO]",
          f"https://www.vernonalgarve.com/for-sale?max_price={PRECO_MAX}"),
-        ("Sunpoint Properties",
+        ("Sunpoint Properties [BLOQUEADO]",
          f"https://www.sunpointproperties.com/for-sale?max_price={PRECO_MAX}"),
         ("A1 Algarve",
          f"https://www.a1-algarve.com/properties?max_price={PRECO_MAX}"),
@@ -225,19 +225,19 @@ SITES = [
     # ── TRIÂNGULO DOURADO ────────────────────────────────
     ("🏌️ TRIÂNGULO DOURADO", [
         ("QP Savills",
-         f"https://www.quintaproperty.com/property-for-sale?max_price={PRECO_MAX}&beds={QUARTOS_MIN}"),
+         "https://www.quintaproperty.com/en/buy"),
         ("JPP Properties",
          f"https://www.jppproperties.com/buy?max_price={PRECO_MAX}&bedrooms={QUARTOS_MIN}"),
-        ("Your Luxury Property",
+        ("Your Luxury Property [BLOQUEADO]",
          f"https://www.yourluxuryproperty.pt/imoveis-para-venda?preco_max={PRECO_MAX}"),
-        ("Barra Prime",
+        ("Barra Prime [BLOQUEADO]",
          f"https://www.barraprime.pt/imoveis-para-venda?preco_max={PRECO_MAX}"),
         ("Inside-Villas",
          f"https://www.inside-villas.com/for-sale?max_price={PRECO_MAX}&bedrooms={QUARTOS_MIN}"),
         ("Cluttons Algarve",
          f"https://www.cluttons.com/algarve/properties-for-sale?max_price={PRECO_MAX}"),
         ("Chestertons Algarve",
-         f"https://www.chestertons.com/algarve/properties-for-sale?max_price={PRECO_MAX}"),
+         "https://www.chestertons.com/algarve/properties-for-sale"),
     ]),
 
     # ── SOTAVENTO ────────────────────────────────────────
@@ -249,7 +249,7 @@ SITES = [
         ("Villas Tavira",
          f"https://www.villastavira.pt/imoveis"),
         ("Imocusto VRSA",
-         f"https://www.imocusto.pt/comprar"),
+         "https://www.imocusto.pt/venda"),
         ("LNHouse VRSA",
          f"https://www.lnhouse.pt/imoveis"),
     ]),
@@ -345,6 +345,8 @@ def main():
     # Guarda resultado
     with open("/tmp/validacao.json","w") as f:
         json.dump(todos_resultados, f, ensure_ascii=False, indent=2)
+    print(f"\n💡 SUGESTÃO: Sites com timeout ou sem conteúdo podem ser desativados")
+    print(f"   para poupar créditos. Edita SCRAPERS_DESATIVADOS no algarve_monitor.py")
     print(f"\n📄 Resultado completo: /tmp/validacao.json")
     print(f"{'='*65}")
 
