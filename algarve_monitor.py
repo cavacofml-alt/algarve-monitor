@@ -916,7 +916,8 @@ def extrair_detalhes_idealista(link):
     """Extrai detalhes completos de um anúncio do Idealista."""
     try:
         r = proxied_get(link); time.sleep(1)
-        soup = BeautifulSoup(r.text,"html.parser")
+        soup = safe_soup(r.text, "detail")
+        if not soup: return {}
         detalhes = {}
         # Área
         for item in soup.select(".details-property_features li, .feature"):
@@ -942,7 +943,8 @@ def extrair_detalhes_imovirtual(link):
     """Extrai detalhes de um anúncio do Imovirtual."""
     try:
         r = proxied_get(link); time.sleep(1)
-        soup = BeautifulSoup(r.text,"html.parser")
+        soup = safe_soup(r.text, "detail")
+        if not soup: return {}
         detalhes = {}
         for item in soup.select("[aria-label], .listing-item-info"):
             txt = item.get_text(strip=True)
@@ -961,7 +963,8 @@ def extrair_detalhes_generico(link):
     """Extração genérica para imobiliárias locais."""
     try:
         r = proxied_get(link); time.sleep(1)
-        soup = BeautifulSoup(r.text,"html.parser")
+        soup = safe_soup(r.text, "detail")
+        if not soup: return {}
         detalhes = {}
         texto_completo = soup.get_text(" ")
         if m := re.search(r"(\d{2,3})\s*m[²2]", texto_completo, re.I):
@@ -1808,11 +1811,11 @@ def scrape_algarveproperty(p):
     return scrape_generico("Algarve Property", urls, p)
 
 def scrape_nurisimo(p):
-    urls=[f"https://www.nurisimo.com/properties?page={page}"]
+    urls=["https://www.nurisimo.com/properties"]
     return scrape_generico("Nurisimo", urls, p)
 
 def scrape_goldenproperties(p):
-    urls=[f"https://www.goldenproperties.pt/imoveis?tipo=venda&page={page}"]
+    urls=["https://www.goldenproperties.pt/imoveis?tipo=venda"]
     return scrape_generico("Golden Properties", urls, p)
 
 def scrape_algarverealestate(p):
@@ -1836,7 +1839,7 @@ def scrape_vaprealestate(p):
     return scrape_generico("VAP Real Estate", urls, p)
 
 def scrape_tripalgarve(p):
-    urls=[f"https://tripalgarve.com/properties?page={page}"]
+    urls=["https://tripalgarve.com/properties"]
     return scrape_generico("Tripalgarve", urls, p)
 
 def scrape_algarvedream(p):
@@ -1912,19 +1915,51 @@ def scrape_playwright_html(nome, url, sel, zona, perfil):
                 return [], 0
             cards = soup.select(sel)
             log.info(f"    Playwright {nome}: {len(cards)} cards")
+            
+            # Primary: extract from cards with links
+            found_from_cards = 0
             for card in cards:
                 lt  = card.select_one("a[href]")
-                pt  = card.select_one("[class*='price'],[class*='preco'],[class*='valor']")
-                tt  = card.select_one("h1,h2,h3,h4,[class*='title'],[class*='nome']")
-                img = card.select_one("img[src]")
                 if not lt: continue
                 href = lt.get("href","")
+                # Skip social media and non-property links
+                if any(x in href.lower() for x in ["facebook","instagram","linkedin","twitter","youtube","mailto","tel:"]):
+                    continue
                 link = href if href.startswith("http") else urljoin(url, href)
+                pt  = card.select_one("[class*='price'],[class*='preco'],[class*='valor'],[class*='Price']")
+                tt  = card.select_one("h1,h2,h3,h4,[class*='title'],[class*='nome'],[class*='Title']")
+                img = card.select_one("img[src]")
                 titulo = tt.get_text(strip=True) if tt else nome
                 preco  = pt.get_text(strip=True) if pt else "N/D"
                 imagem = img.get("src") or img.get("data-src","") if img else None
                 item = fazer_item(link, titulo, preco, nome, zona, imagem)
-                if validar(item, perfil): items.append(item)
+                if validar(item, perfil):
+                    items.append(item)
+                    found_from_cards += 1
+
+            # Fallback: if no items found from cards, try link-based extraction
+            if not found_from_cards:
+                keywords = ["imovel","property","detalhes","for-sale","venda","casa","villa","apartamento","moradia"]
+                seen_links = set()
+                for a in soup.select("a[href]"):
+                    href = a.get("href","")
+                    if not href or not any(k in href.lower() for k in keywords): continue
+                    if len(href) < 15: continue
+                    link = href if href.startswith("http") else urljoin(url, href)
+                    if link in seen_links: continue
+                    seen_links.add(link)
+                    # Find parent container for price/title
+                    parent = a.parent or a
+                    for _ in range(3):  # go up max 3 levels
+                        if parent and len(parent.get_text(strip=True)) > 20:
+                            break
+                        if parent: parent = parent.parent
+                    pt = parent.select_one("[class*='price'],[class*='preco'],[class*='valor']") if parent else None
+                    tt = parent.select_one("h1,h2,h3,h4,[class*='title']") if parent else None
+                    titulo = tt.get_text(strip=True) if tt else nome
+                    preco  = pt.get_text(strip=True) if pt else "N/D"
+                    item = fazer_item(link, titulo, preco, nome, zona, None)
+                    if validar(item, perfil): items.append(item)
         except Exception as e:
             log.error(f"  Playwright {nome}: {e}")
     return items, 1
@@ -2026,7 +2061,7 @@ def scrape_cluttons(p):
     return scrape_generico("Cluttons Algarve", urls, p)
 
 def scrape_chestertons(p):
-    urls=[f"https://www.chestertons.com/algarve/properties-for-sale?page={page}&bedrooms={p['quartos_min']}"]
+    urls=["https://www.chestertons.com/algarve/properties-for-sale"]
     return scrape_generico("Chestertons Algarve", urls, p)
 
 # ── SOTAVENTO ────────────────────────────────────────────
