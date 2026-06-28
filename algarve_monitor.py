@@ -1772,6 +1772,149 @@ def scrape_a1algarve(p):
     urls=[f"https://www.a1-algarve.com/properties?max_price={p['preco_max']}&bedrooms={p['quartos_min']}"]
     return scrape_generico("A1 Algarve", urls, p)
 
+# ── SCRAPERS COM PLAYWRIGHT (sites que bloqueiam requests mas não browser) ──
+
+def scrape_playwright_html(nome, url, sel, zona, perfil):
+    """Scraper genérico usando Playwright para sites React/SPA."""
+    if not PLAYWRIGHT_AVAILABLE:
+        log.warning(f"{nome}: Playwright não disponível")
+        return [], 0
+    items = []
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True, executable_path="/usr/bin/chromium",
+                args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu",
+                      "--disable-blink-features=AutomationControlled"]
+            )
+            ctx = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                viewport={"width":1920,"height":1080}, locale="pt-PT"
+            )
+            page = ctx.new_page()
+            page.goto(url, wait_until="networkidle", timeout=30000)
+            # Scroll to load all items
+            for pos in [0.3, 0.6, 1.0]:
+                page.evaluate(f"window.scrollTo(0, document.body.scrollHeight*{pos})")
+                page.wait_for_timeout(1500)
+            html = page.content()
+            browser.close()
+
+        soup = safe_soup(html, nome)
+        if not soup: return [], 0
+
+        cards = soup.select(sel)
+        log.info(f"    Playwright {nome}: {len(cards)} cards")
+        for card in cards:
+            lt  = card.select_one("a[href]")
+            pt  = card.select_one("[class*='price'],[class*='preco'],[class*='valor']")
+            tt  = card.select_one("h1,h2,h3,h4,[class*='title'],[class*='nome']")
+            img = card.select_one("img[src]")
+            if not lt: continue
+            href = lt.get("href","")
+            link = href if href.startswith("http") else urljoin(url, href)
+            titulo = (tt.get_text(strip=True) if tt else nome)
+            preco  = (pt.get_text(strip=True) if pt else "N/D")
+            imagem = img.get("src") or img.get("data-src","") if img else None
+            item = fazer_item(link, titulo, preco, nome, zona, imagem)
+            if validar(item, perfil): items.append(item)
+    except Exception as e:
+        log.error(f"  Playwright {nome}: {e}")
+    return items, 1
+
+def scrape_boto(p):
+    return scrape_playwright_html(
+        "Boto Properties",
+        "https://www.botoproperties.com/imoveis",
+        "[class*='property']", "Barlavento", p
+    )
+
+def scrape_sunpoint(p):
+    return scrape_playwright_html(
+        "Sunpoint Properties",
+        "https://www.sunpoint.pt/propriedades",
+        "[class*='property']", "Barlavento", p
+    )
+
+def scrape_algarveuniqueproperties(p):
+    return scrape_playwright_html(
+        "Algarve Unique Properties",
+        "https://www.algarveuniqueproperties.com/imoveis",
+        "[class*='property']", "Algarve", p
+    )
+
+def scrape_garvetur(p):
+    return scrape_playwright_html(
+        "Garvetur",
+        "https://www.garveturproperties.com/",
+        "[class*='property']", "Algarve", p
+    )
+
+def scrape_barraprime(p):
+    return scrape_playwright_html(
+        "Barra Prime",
+        "https://www.barraprime.pt/imoveis-para-venda",
+        "li[class]", "Triângulo Dourado", p
+    )
+
+def scrape_mimosaproperties(p):
+    return scrape_playwright_html(
+        "Mimosa Properties",
+        "https://www.mimosaproperties.com/procuro-imovel-mimosaproperties",
+        "li[class]", "Barlavento", p
+    )
+
+def scrape_sortami(p):
+    return scrape_playwright_html(
+        "Sortami",
+        "https://www.sortami.pt/imoveis",
+        "[class*='item']", "Algarve", p
+    )
+
+def scrape_vernonalgarve(p):
+    return scrape_playwright_html(
+        "Vernon Algarve",
+        "https://www.vernonalgarve.com/imoveis-para-venda",
+        "li[class]", "Barlavento", p
+    )
+
+def scrape_dalmaportuguesa(p):
+    # D'Alma: tenta descobrir URL de listagem via Playwright
+    if not PLAYWRIGHT_AVAILABLE: return [], 0
+    try:
+        with sync_playwright() as p_pw:
+            browser = p_pw.chromium.launch(
+                headless=True, executable_path="/usr/bin/chromium",
+                args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu"])
+            page = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                locale="pt-PT").new_page()
+            page.goto("https://www.dalmaportuguesa.com", wait_until="domcontentloaded", timeout=20000)
+            page.wait_for_timeout(3000)
+            html = page.content()
+            browser.close()
+        soup = safe_soup(html, "D'Alma")
+        if soup:
+            precos = [e.get_text(strip=True) for e in soup.find_all(True)
+                      if "€" in e.get_text() and 5<len(e.get_text(strip=True))<30
+                      and any(c.isdigit() for c in e.get_text())]
+            cards = soup.select("[class*='property'],[class*='listing'],[class*='imovel'],article")
+            items = []
+            for card in cards:
+                lt = card.select_one("a[href]")
+                pt = card.select_one("[class*='price'],[class*='preco']")
+                if not lt: continue
+                href = lt.get("href","")
+                link = href if href.startswith("http") else "https://www.dalmaportuguesa.com"+href
+                titulo = card.get_text(strip=True)[:80]
+                preco  = pt.get_text(strip=True) if pt else "N/D"
+                item = fazer_item(link, titulo, preco, "D'Alma Portuguesa", "Algarve", None)
+                if validar(item, p): items.append(item)
+            return items, 1
+    except Exception as e:
+        log.error(f"  D'Alma Portuguesa: {e}")
+    return [], 0
+
 # ── TRIÂNGULO DOURADO ────────────────────────────────────
 
 def scrape_qpsavills(p):
@@ -1892,12 +2035,22 @@ SCRAPERS=[
     ("Tripalgarve",scrape_tripalgarve),     # ✅ URL corrigido: sem www
     # ── BARLAVENTO ───────────────────────────────────────
     ("A1 Algarve",scrape_a1algarve),
+    ("Boto Properties",scrape_boto),         # ✅ Playwright
+    ("Sunpoint Properties",scrape_sunpoint), # ✅ Playwright
+    ("Mimosa Properties",scrape_mimosaproperties), # ✅ Playwright
+    ("Vernon Algarve",scrape_vernonalgarve), # ✅ Playwright
+    # ── ALGARVE REGIÃO (Playwright) ──────────────────────
+    ("Garvetur",scrape_garvetur),            # ✅ Playwright (garveturproperties.com)
+    ("Algarve Unique Properties",scrape_algarveuniqueproperties), # ✅ Playwright
+    ("Sortami",scrape_sortami),              # ✅ Playwright
+    ("D'Alma Portuguesa",scrape_dalmaportuguesa), # ✅ Playwright
     # ── TRIÂNGULO DOURADO (✅/🔧 corrigidos) ────────────
     ("QP Savills",scrape_qpsavills),        # ✅ URL corrigido: /en/buy
     ("JPP Properties",scrape_jppproperties),
     ("Inside-Villas",scrape_insidevillas),
     ("Cluttons Algarve",scrape_cluttons),
     ("Chestertons Algarve",scrape_chestertons), # ✅ URL corrigido
+    ("Barra Prime",scrape_barraprime),       # ✅ Playwright
 ]
 
 # ============================================================
