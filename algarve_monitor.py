@@ -30,8 +30,13 @@ try:
     PLAYWRIGHT_AVAILABLE = True
 except ImportError:
     PLAYWRIGHT_AVAILABLE = False
-    log.warning("Playwright não instalado — a usar requests")
-from webdriver_manager.chrome import ChromeDriverManager
+
+try:
+    from webdriver_manager.chrome import ChromeDriverManager
+    WEBDRIVER_MANAGER_AVAILABLE = True
+except ImportError:
+    WEBDRIVER_MANAGER_AVAILABLE = False
+    ChromeDriverManager = None
 
 logging.basicConfig(level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%d/%m/%Y %H:%M:%S")
@@ -1059,7 +1064,7 @@ def get_driver():
         log.info(f"ChromeDriver: {chromedriver_bin}")
     else:
         log.warning("ChromeDriver não encontrado, a usar webdriver-manager")
-        svc = Service(ChromeDriverManager().install())
+        svc = Service(ChromeDriverManager().install()) if ChromeDriverManager else Service("/usr/bin/chromedriver")
 
     _driver = webdriver.Chrome(service=svc, options=opts)
     _driver.set_page_load_timeout(30)
