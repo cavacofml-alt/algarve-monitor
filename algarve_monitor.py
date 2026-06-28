@@ -879,19 +879,48 @@ PALAVRAS_ARRENDAMENTO = [
 ]
 PALAVRAS_VENDA = ["venda","comprar","compra","vende-se","para venda","sale","sell"]
 
-def validar(item, perfil):
-    """Valida imóvel contra filtros do perfil e exclui arrendamentos."""
-    # Excluir arrendamentos
-    titulo = (item.get("titulo") or "").lower()
-    preco_str = (item.get("preco") or "").lower()
-    fonte_url = (item.get("link") or "").lower()
+# Domínios que não são imóveis (redes sociais, etc.)
+DOMINIOS_EXCLUIR = [
+    "linkedin.com","facebook.com","instagram.com","twitter.com",
+    "youtube.com","tiktok.com","whatsapp.com","t.me","telegram.me",
+    "google.com","maps.google","mailto:","tel:","javascript:",
+]
 
+# Títulos genéricos que indicam que não é um imóvel real
+TITULOS_GENERICOS = [
+    "kw portugal","era imobiliária","lnhouse","algarvila","villas tavira",
+    "casas do sotavento","garvetur","sortami","imocusto","engel","völkers",
+    "remax","re/max","century 21","coldwell","keller williams",
+    "concelhos","naturezas","sobre nós","contactos","homepage",
+    "facebook","instagram","linkedin","twitter","youtube",
+]
+
+def validar(item, perfil):
+    """Valida imóvel contra filtros do perfil."""
+    titulo    = (item.get("titulo") or "").lower().strip()
+    preco_str = (item.get("preco") or "").lower()
+    link      = (item.get("link") or "").lower()
+
+    # Excluir redes sociais e links de navegação
+    if any(d in link for d in DOMINIOS_EXCLUIR):
+        return False
+
+    # Excluir títulos genéricos (nome da imobiliária em vez do imóvel)
+    if titulo in TITULOS_GENERICOS or len(titulo) < 5:
+        return False
+
+    # Excluir se título é exatamente o nome da fonte
+    fonte = (item.get("fonte") or "").lower()
+    if titulo == fonte or titulo.replace(" ","") == fonte.replace(" ",""):
+        return False
+
+    # Excluir arrendamentos
     for palavra in PALAVRAS_ARRENDAMENTO:
         if palavra in titulo or palavra in preco_str:
             return False
 
-    # Excluir por URL (alguns sites usam /arrendar/ no URL)
-    if any(x in fonte_url for x in ["/arrendar/","/arrendamento/","/alugar/","/rent/"]):
+    # Excluir por URL
+    if any(x in link for x in ["/arrendar/","/arrendamento/","/alugar/","/rent/"]):
         return False
 
     # Validar preço máximo
@@ -899,8 +928,8 @@ def validar(item, perfil):
     if pv and pv > perfil["preco_max"]:
         return False
 
-    # Excluir preços mensais (arrendamento) — preços muito baixos para compra
-    if pv and pv < 20000:
+    # Excluir preços mensais (arrendamento)
+    if pv and pv < 10000:
         return False
 
     return True
