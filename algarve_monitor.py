@@ -1929,14 +1929,14 @@ def verificar():
 
     # Verifica créditos — só para se ScraperAPI esgotado E sem outros proxies
     creditos = verificar_creditos_scraperapi()
-    proxies_disponiveis = sum([bool(SCRAPERAPI_KEY), bool(ZENROWS_KEY), bool(SCRAPINGBEE_KEY)])
+    n_proxies = proxies_disponiveis()
     
     if creditos:
         used, limit, pct = creditos
         log.info(f"ScraperAPI: {used}/{limit} créditos usados ({pct}%)")
 
         if pct >= 100:
-            if proxies_ativos <= 1:
+            if n_proxies <= 1:
                 # Só tem ScraperAPI e está esgotado — para
                 log.warning("⛔ ScraperAPI sem créditos e sem proxies alternativos! A saltar ronda.")
                 try:
