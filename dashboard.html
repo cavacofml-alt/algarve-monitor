@@ -230,6 +230,15 @@
     <button onclick="abrirModalNovoPerfil()" style="padding:9px 18px;background:var(--navy);color:white;border:none;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer">+ Novo Perfil</button>
   </div>
   <div id="perfis-list"><div class="empty">A carregar...</div></div>
+
+  <!-- REDES SOCIAIS DAS IMOBILIÁRIAS -->
+  <div style="margin-top:32px">
+    <h2 style="font-size:18px;color:var(--navy);margin-bottom:16px">📱 Imobiliárias nas Redes Sociais</h2>
+    <p style="font-size:13px;color:var(--g400);margin-bottom:16px">
+      O Instagram e Facebook não permitem scraping automático, mas podes ver os anúncios mais recentes diretamente aqui.
+    </p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px" id="social-grid"></div>
+  </div>
 </div>
 
 <!-- VISITAS -->
@@ -677,12 +686,127 @@ const TIPOS_DISPONIVEIS = [
   {slug:"moradias-e-vivendas", label:"Moradia/Vivenda"}
 ];
 
+const IMOBILIARIAS_SOCIAL = [
+  {
+    nome: "Casas do Sotavento",
+    logo: "🏠",
+    web: "https://www.casasdosotavento.pt/imoveis/venda/",
+    facebook: "https://www.facebook.com/casasdosotavento",
+    instagram: "https://www.instagram.com/casasdosotavento/",
+  },
+  {
+    nome: "ERA Imobiliária",
+    logo: "🔑",
+    web: "https://www.era.pt/comprar/imoveis/faro/",
+    facebook: "https://www.facebook.com/eraimobiliaria",
+    instagram: "https://www.instagram.com/eraportugal/",
+    linkedin: "https://www.linkedin.com/company/285323",
+    youtube: "https://www.youtube.com/user/eraimobiliaria",
+  },
+  {
+    nome: "RE/MAX Portugal",
+    logo: "🏡",
+    web: "https://www.remax.pt/comprar/faro/",
+    facebook: "https://www.facebook.com/remaxportugal",
+    instagram: "https://www.instagram.com/remaxportugal/",
+  },
+  {
+    nome: "KW Portugal",
+    logo: "🌟",
+    web: "https://www.kwportugal.pt/pt/pesquisa/?localizacao=faro&tipo=comprar",
+    facebook: "https://facebook.com/kwportugal/",
+    instagram: "https://www.instagram.com/kellerwilliamsportugal/",
+    linkedin: "https://www.linkedin.com/company/kwportugal/",
+    youtube: "https://www.youtube.com/@kwportugal8964",
+  },
+  {
+    nome: "Engel & Völkers",
+    logo: "💎",
+    web: "https://www.engelvoelkers.com/pt/en/search/?adType=BUY&country=PRT&city=faro",
+    facebook: "https://www.facebook.com/engelvoelkers.portugal",
+    instagram: "https://www.instagram.com/engelvoelkersportugal/",
+    linkedin: "https://www.linkedin.com/company/engel-volkers-portugal",
+  },
+  {
+    nome: "AlgarVila",
+    logo: "🌊",
+    web: "https://www.algarvila.com/en-gb/properties",
+    facebook: "https://www.facebook.com/algarvila",
+    instagram: "https://www.instagram.com/algarvila/",
+  },
+  {
+    nome: "Villas Tavira",
+    logo: "🏘️",
+    web: "https://www.villastavira.pt/imoveis",
+    facebook: "https://www.facebook.com/villastavira",
+    instagram: "https://www.instagram.com/villastavira/",
+  },
+  {
+    nome: "LNHouse",
+    logo: "🔵",
+    web: "https://www.lnhouse.pt/imoveis",
+    facebook: "https://www.facebook.com/lnhouse.pt",
+    instagram: "https://www.instagram.com/lnhouse.pt/",
+  },
+  {
+    nome: "Idealista",
+    logo: "🔍",
+    web: "https://www.idealista.pt/comprar-casas/faro/com-apartamentos/?preco-max=250000",
+    facebook: "https://www.facebook.com/idealista.pt",
+    instagram: "https://www.instagram.com/idealista_pt/",
+  },
+  {
+    nome: "Imovirtual",
+    logo: "🏙️",
+    web: "https://www.imovirtual.com/comprar/apartamento/faro/?priceMax=250000",
+    facebook: "https://www.facebook.com/imovirtual",
+    instagram: "https://www.instagram.com/imovirtual/",
+  },
+  {
+    nome: "Casa SAPO",
+    logo: "🐸",
+    web: "https://casa.sapo.pt/comprar-apartamentos/faro/?precomax=250000",
+    facebook: "https://www.facebook.com/casasapo",
+    instagram: "https://www.instagram.com/casasapo/",
+  },
+  {
+    nome: "SuperCasa",
+    logo: "⭐",
+    web: "https://supercasa.pt/comprar-casas/faro/com-apartamentos/?preco-max=250000",
+    facebook: "https://www.facebook.com/supercasapt",
+    instagram: "https://www.instagram.com/supercasa.pt/",
+  },
+];
+
+function renderSocialGrid(){
+  const grid = document.getElementById('social-grid');
+  if(!grid) return;
+  grid.innerHTML = IMOBILIARIAS_SOCIAL.map(im=>{
+    const redes = [];
+    if(im.web)       redes.push(`<a href="${im.web}" target="_blank" style="text-decoration:none" title="Website">🌐</a>`);
+    if(im.facebook)  redes.push(`<a href="${im.facebook}" target="_blank" style="text-decoration:none" title="Facebook">📘</a>`);
+    if(im.instagram) redes.push(`<a href="${im.instagram}" target="_blank" style="text-decoration:none" title="Instagram">📸</a>`);
+    if(im.linkedin)  redes.push(`<a href="${im.linkedin}" target="_blank" style="text-decoration:none" title="LinkedIn">💼</a>`);
+    if(im.youtube)   redes.push(`<a href="${im.youtube}" target="_blank" style="text-decoration:none" title="YouTube">▶️</a>`);
+    return `
+      <div style="background:white;border-radius:10px;padding:16px;box-shadow:var(--s);
+                  display:flex;align-items:center;justify-content:space-between;gap:10px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:24px">${im.logo}</span>
+          <span style="font-size:14px;font-weight:600;color:var(--navy)">${im.nome}</span>
+        </div>
+        <div style="display:flex;gap:10px;font-size:20px">${redes.join('')}</div>
+      </div>`;
+  }).join('');
+}
+
 async function carregarConfig(){
   const perfis = await fetch('/api/perfis').then(r=>r.json());
   const el = document.getElementById('perfis-list');
   if(!perfis.length){
     el.innerHTML='<div class="empty">Nenhum perfil configurado. Cria um novo.</div>'; return;
   }
+  renderSocialGrid();
   el.innerHTML = perfis.map(p=>`
     <div style="background:white;border-radius:10px;padding:20px;margin-bottom:14px;box-shadow:var(--s);border-left:4px solid ${p.ativo?'var(--lime)':'var(--g200)'}">
       <div style="display:flex;justify-content:space-between;align-items:start;flex-wrap:wrap;gap:10px">
