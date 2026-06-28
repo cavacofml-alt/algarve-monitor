@@ -1684,38 +1684,42 @@ def verificar():
     log.info(f"Verificação: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
     log.info("="*55)
 
-    # Verifica créditos antes de correr
+    # Verifica créditos — só para se ScraperAPI esgotado E sem outros proxies
     creditos = verificar_creditos_scraperapi()
+    proxies_disponiveis = sum([bool(SCRAPERAPI_KEY), bool(ZENROWS_KEY), bool(SCRAPINGBEE_KEY)])
+    
     if creditos:
         used, limit, pct = creditos
         log.info(f"ScraperAPI: {used}/{limit} créditos usados ({pct}%)")
 
         if pct >= 100:
-            log.warning("⛔ ScraperAPI sem créditos! A saltar esta ronda.")
-            # Envia email de aviso
-            try:
-                msg = MIMEMultipart("alternative")
-                msg["Subject"] = "⛔ ScraperAPI sem créditos — Monitor Imóveis pausado"
-                msg["From"] = EMAIL_REMETENTE
-                msg["To"]   = EMAIL_DESTINATARIO
-                msg.attach(MIMEText(f"""
-                <html><body style="font-family:Arial,sans-serif;padding:20px">
-                <h2 style="color:#dc2626">⛔ ScraperAPI sem créditos!</h2>
-                <p>Usados: <b>{used}/{limit}</b> ({pct}%)</p>
-                <p>O monitor está <b>pausado</b> até ao reset mensal.</p>
-                <p>Para continuar agora, faz upgrade em
-                <a href="https://scraperapi.com/pricing">scraperapi.com/pricing</a></p>
-                </body></html>""", "html"))
-                with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-                    smtp.login(EMAIL_REMETENTE, EMAIL_PASSWORD)
-                    smtp.sendmail(EMAIL_REMETENTE, EMAIL_DESTINATARIO, msg.as_string())
-            except Exception as e:
-                log.error(f"Email aviso créditos: {e}")
-            return
+            if proxies_disponiveis <= 1:
+                # Só tem ScraperAPI e está esgotado — para
+                log.warning("⛔ ScraperAPI sem créditos e sem proxies alternativos! A saltar ronda.")
+                try:
+                    msg = MIMEMultipart("alternative")
+                    msg["Subject"] = "⛔ Todos os proxies esgotados — Monitor pausado"
+                    msg["From"] = EMAIL_REMETENTE
+                    msg["To"]   = EMAIL_DESTINATARIO
+                    msg.attach(MIMEText(f"""
+                    <html><body style="font-family:Arial,sans-serif;padding:20px">
+                    <h2 style="color:#dc2626">⛔ Todos os proxies esgotados!</h2>
+                    <p>ScraperAPI: <b>{used}/{limit}</b> ({pct}%)</p>
+                    <p>Sem ZenRows nem ScrapingBee configurados.</p>
+                    <p>O monitor está <b>pausado</b> até ao reset mensal (dia 1).</p>
+                    </body></html>""", "html"))
+                    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+                        smtp.login(EMAIL_REMETENTE, EMAIL_PASSWORD)
+                        smtp.sendmail(EMAIL_REMETENTE, EMAIL_DESTINATARIO, msg.as_string())
+                except Exception as e:
+                    log.error(f"Email aviso créditos: {e}")
+                return
+            else:
+                # Tem outros proxies — continua com ZenRows/ScrapingBee
+                log.warning(f"⚠️ ScraperAPI esgotado — a usar ZenRows/ScrapingBee ({proxies_disponiveis-1} proxy(s) alternativos)")
 
-        if pct >= 80:
-            log.warning(f"⚠️ ScraperAPI a {pct}% do limite! Considera fazer upgrade.")
-            # Envia alerta mas continua
+        elif pct >= 80:
+            log.warning(f"⚠️ ScraperAPI a {pct}% do limite!")
             try:
                 msg = MIMEMultipart("alternative")
                 msg["Subject"] = f"⚠️ ScraperAPI a {pct}% do limite — Monitor Imóveis"
@@ -1725,11 +1729,7 @@ def verificar():
                 <html><body style="font-family:Arial,sans-serif;padding:20px">
                 <h2 style="color:#f59e0b">⚠️ ScraperAPI quase no limite!</h2>
                 <p>Usados: <b>{used}/{limit}</b> ({pct}%)</p>
-                <p>Restam aproximadamente <b>{limit-used}</b> créditos
-                (~{max(0,(limit-used)//20)} dias ao ritmo atual).</p>
-                <p>Faz upgrade em
-                <a href="https://scraperapi.com/pricing">scraperapi.com/pricing</a>
-                para não interromper o monitor.</p>
+                <p>A continuar com ZenRows e ScrapingBee como backup.</p>
                 </body></html>""", "html"))
                 with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
                     smtp.login(EMAIL_REMETENTE, EMAIL_PASSWORD)
