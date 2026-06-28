@@ -278,6 +278,12 @@ def inspect_site(nome, base_url, test_url=None):
     report["cms"] = cms
     print(f"  Framework: {fw}" + (f"  |  CMS: {cms}" if cms else ""))
 
+    # Abortar se HTTP != 200
+    if status != 200:
+        print(f"  ❌ HTTP {status} — a saltar (URL inválido ou bloqueado)")
+        report["score"] = 0
+        return report
+
     # 2. JSON-LD
     jsonld = extract_jsonld(html or "")
     if jsonld:
@@ -345,18 +351,25 @@ def inspect_site(nome, base_url, test_url=None):
     # 8. Fetch com proxy JS
     print(f"  A tentar proxy JS (Crawlbase)...")
     status2, html2, _ = fetch_rendered(test_url, "crawlbase")
-    if html2 and "<" in html2:
+    if status2 != 200:
+        print(f"  Proxy falhou: HTTP {status2}")
+    elif not html2:
+        print(f"  Proxy: HTML vazio")
+    elif "<html" not in html2.lower():
+        print(f"  Proxy: resposta não parece HTML ({len(html2)} chars)")
+    elif "<" in html2:
         soup2 = BeautifulSoup(html2, "html.parser")
         precos = [e.get_text(strip=True) for e in soup2.find_all(True)
                   if "€" in e.get_text() and 5<len(e.get_text(strip=True))<30 and any(c.isdigit() for c in e.get_text())][:3]
         links = len([a for a in soup2.select("a[href]") if any(k in a.get("href","").lower() for k in ["property","imovel","sale","buy","venda","comprar"])])
-        cards = max(len(soup2.select(s)) for s in ["article","[class*='property']","[class*='listing']","[class*='card']"] if soup2.select(s))
+        cards = 0
+        for s in ["article","[class*='property']","[class*='listing']","[class*='card']"]:
+            cards = max(cards, len(soup2.select(s)))
         print(f"  Proxy JS: HTTP {status2} | {len(html2)} chars | {links} links | {cards} cards | preços: {precos}")
         if precos or links > 5 or cards > 2:
             report["proxy_works"] = True
             report["score"] += 20
-    else:
-        print(f"  Proxy JS: HTTP {status2} — sem conteúdo")
+
 
     # Score final
     score = min(100, report["score"])
@@ -372,7 +385,7 @@ def inspect_site(nome, base_url, test_url=None):
 
 # ── RUN ──────────────────────────────────────────────────────
 SITES = [
-    ("Garvetur",           "https://www.garvetur.pt",           "https://www.garvetur.pt/imoveis/venda"),
+    ("Garvetur",           "https://garvetur.pt",               "https://garvetur.pt/imoveis/venda"),
     ("Sotheby's",          "https://www.sothebysrealty.pt",      "https://www.sothebysrealty.pt/imoveis/compra"),
     ("Chave Nova",         "https://www.chavanova.pt",           "https://www.chavanova.pt/imoveis?distrito=faro&tipo=venda"),
     ("D'Alma Portuguesa",  "https://www.dalmaportuguesa.com",    "https://www.dalmaportuguesa.com/imoveis"),
@@ -394,8 +407,12 @@ print("="*60)
 
 all_reports = []
 for nome, base, test in SITES:
-    report = inspect_site(nome, base, test)
-    all_reports.append(report)
+    try:
+        report = inspect_site(nome, base, test)
+        all_reports.append(report)
+    except Exception as e:
+        print(f"  ❌ {nome}: erro inesperado — {e}")
+        all_reports.append({"nome": nome, "base_url": base, "score": 0, "framework": "Erro", "apis": []})
     time.sleep(3)
 
 # Resumo final
