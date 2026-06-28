@@ -1531,7 +1531,7 @@ def scrape_imocusto(p):
     except Exception as e: log.error(f"Imocusto: {e}"); return [],0
 
 def scrape_lnhouse(p):
-    try: return _api_scrape("https://www.lnhouse.pt/imoveis/venda?page={page}","https://www.lnhouse.pt","LNHouse","VRSA/Castro Marim")
+    try: return _api_scrape("https://www.lnhouse.pt/venda?page={page}","https://www.lnhouse.pt","LNHouse","VRSA/Castro Marim")
     except Exception as e: log.error(f"LNHouse: {e}"); return [],0
 
 def scrape_sortami(p):
@@ -1668,8 +1668,13 @@ def scrape_coldwell(p):
     return scrape_generico("Coldwell Banker", urls, p)
 
 def scrape_sothebys(p):
-    urls=[f"https://www.sothebysrealty.pt/imoveis/compra?preco_max={p['preco_max']}&distrito=faro"]
-    return scrape_generico("Sotheby's", urls, p)
+    """Sotheby's — Playwright (connection error via requests)."""
+    return scrape_playwright_html(
+        "Sotheby's",
+        "https://www.sothebysrealty.pt/imoveis/compra",
+        "[class*='property'],[class*='listing'],article,.card",
+        "Algarve", p
+    )
 
 def scrape_iad(p):
     urls=[f"https://www.iadportugal.pt/comprar?page={page}",
@@ -1685,8 +1690,13 @@ def scrape_century21(p):
     return scrape_generico("Century 21", urls, p)
 
 def scrape_chavanova(p):
-    urls=[f"https://www.chavanova.pt/imoveis?distrito=faro&tipo=venda&preco_max={p['preco_max']}"]
-    return scrape_generico("Chave Nova", urls, p)
+    """Chave Nova — Playwright (connection error via requests)."""
+    return scrape_playwright_html(
+        "Chave Nova",
+        "https://www.chavanova.pt/imoveis?distrito=faro&tipo=venda",
+        "[class*='property'],[class*='listing'],article,.card",
+        "Algarve", p
+    )
 
 def scrape_arcada(p):
     urls=[f"https://www.arcada.com.pt/imoveis?zona=algarve&tipo=venda&preco_max={p['preco_max']}"]
@@ -1695,12 +1705,22 @@ def scrape_arcada(p):
 # ── ALGARVE TODA A REGIÃO ────────────────────────────────
 
 def scrape_villaskey(p):
-    urls=[f"https://www.villaskey.com/venda?preco_max={p['preco_max']}&zona=algarve"]
-    return scrape_generico("Villas Key", urls, p)
+    """Villas Key — Playwright (connection error via requests)."""
+    return scrape_playwright_html(
+        "Villas Key",
+        "https://www.villaskey.com/en/for-sale",
+        "[class*='property'],[class*='listing'],article,.card",
+        "Algarve", p
+    )
 
 def scrape_dils(p):
-    urls=[f"https://www.dils.pt/imoveis?tipo=venda&zona=algarve&preco_max={p['preco_max']}"]
-    return scrape_generico("Dils Portugal", urls, p)
+    """Dils Portugal — Playwright (HTTP 200 sem conteúdo via proxy)."""
+    return scrape_playwright_html(
+        "Dils Portugal",
+        "https://www.dils.pt/imoveis?tipo=venda&zona=algarve",
+        "[class*='property'],[class*='listing'],article,.card",
+        "Algarve", p
+    )
 
 def scrape_buyme(p):
     urls=[f"https://www.buymeproperty.pt/comprar?preco_max={p['preco_max']}&quartos_min={p['quartos_min']}"]
@@ -1743,8 +1763,32 @@ def scrape_tripalgarve(p):
     return scrape_generico("Tripalgarve", urls, p)
 
 def scrape_algarvedream(p):
-    urls=[f"https://www.algarvedreamproperty.com/for-sale?max_price={p['preco_max']}"]
-    return scrape_generico("Algarve Dream Property", urls, p)
+    """Algarve Dream Property — Playwright com filtro de domínio."""
+    if not PLAYWRIGHT_AVAILABLE: return [],0
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(
+                headless=True, executable_path="/usr/bin/chromium",
+                args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu"])
+            page = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                locale="pt-PT").new_page()
+            # Open homepage and find listing URL on same domain
+            page.goto("https://www.algarvedreamproperty.com", wait_until="domcontentloaded", timeout=20000)
+            page.wait_for_timeout(2000)
+            # Find listing link on same domain only
+            links = page.evaluate("""() =>
+                Array.from(document.querySelectorAll('a[href]'))
+                .filter(a => a.href.includes('algarvedreamproperty.com'))
+                .filter(a => /imoveis|properties|for-sale|venda|listing/i.test(a.href+a.innerText))
+                .map(a => a.href)
+            """)
+            url = links[0] if links else "https://www.algarvedreamproperty.com/imoveis"
+            log.info(f"  Algarve Dream: URL={url}")
+            return scrape_playwright_html("Algarve Dream Property", url,
+                "[class*='property'],[class*='listing'],article", "Algarve", p)
+    except Exception as e:
+        log.error(f"  Algarve Dream: {e}"); return [],0
 
 # ── BARLAVENTO ───────────────────────────────────────────
 
@@ -1926,8 +1970,13 @@ def scrape_jppproperties(p):
     return scrape_generico("JPP Properties", urls, p)
 
 def scrape_yourluxury(p):
-    urls=[f"https://www.yourluxuryproperty.pt/imoveis-para-venda?preco_max={p['preco_max']}"]
-    return scrape_generico("Your Luxury Property", urls, p)
+    """Your Luxury Property — Playwright com URL correta."""
+    return scrape_playwright_html(
+        "Your Luxury Property",
+        "https://www.yourluxuryproperty.pt/imoveis",
+        "[class*='property'],[class*='listing'],li[class],article",
+        "Triângulo Dourado", p
+    )
 
 def scrape_barraprime(p):
     urls=[f"https://www.barraprime.pt/imoveis-para-venda?preco_max={p['preco_max']}"]
@@ -1983,23 +2032,8 @@ SCRAPERS_DESATIVADOS = {
 }
 
 # Sites que continuam bloqueados após fix_urls.py (HTTP 0 ou sem conteúdo em todos os URLs testados)
-SCRAPERS_TEMPORARIAMENTE_INATIVOS = {
-    "Garvetur",          # Bloqueado — todos os URLs falham
-    "Villas Key",        # HTTP 0 — domínio inacessível
-    "Sotheby's",         # Bloqueado — SPA sem SSR
-    "Chave Nova",        # HTTP 0 — domínio inacessível
-    "D'Alma Portuguesa", # Bloqueado — SPA sem SSR
-    "Vernon Algarve",    # Bloqueado — SPA sem SSR
-    "Sortami",           # Bloqueado — SPA sem SSR
-    "Mimosa Properties", # Bloqueado — SPA sem SSR
-    "Algarve Dream Property", # Bloqueado
-    "Algarve Unique Properties", # Bloqueado
-    "Boto Properties",   # Bloqueado
-    "Sunpoint Properties",# Bloqueado
-    "Your Luxury Property",# Bloqueado
-    "Barra Prime",       # Bloqueado
-    "LNHouse",           # Mostra arrendamentos
-}
+# Todos os sites foram migrados para Playwright ou tiveram URLs corrigidos
+SCRAPERS_TEMPORARIAMENTE_INATIVOS = set()  # vazio — todos activos
 
 SCRAPERS=[
     # ── PORTAIS (✅ todos funcionam) ─────────────────────
@@ -2051,6 +2085,14 @@ SCRAPERS=[
     ("Cluttons Algarve",scrape_cluttons),
     ("Chestertons Algarve",scrape_chestertons), # ✅ URL corrigido
     ("Barra Prime",scrape_barraprime),       # ✅ Playwright
+    # ── ANTERIORMENTE EM FALTA — agora com Playwright ────
+    ("LNHouse",scrape_lnhouse),              # ✅ URL: /venda
+    ("Algarve Dream Property",scrape_algarvedream), # ✅ Playwright
+    ("Your Luxury Property",scrape_yourluxury), # ✅ Playwright
+    ("Dils Portugal",scrape_dils),           # ✅ Playwright
+    ("Sotheby's",scrape_sothebys),           # ✅ Playwright
+    ("Chave Nova",scrape_chavanova),         # ✅ Playwright
+    ("Villas Key",scrape_villaskey),         # ✅ Playwright
 ]
 
 # ============================================================
