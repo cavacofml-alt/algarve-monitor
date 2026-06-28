@@ -1323,32 +1323,33 @@ async function carregarSaude(){
   el.innerHTML = `
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px">
       ${scrapers.map(s=>{
-        const taxaErro = s.rondas_com_erro/Math.max(s.total_rondas,1);
-        const taxaSucesso = Math.round((1-taxaErro)*100);
-        const ok = s.total_imoveis>0 && taxaErro<0.5;
-        const cor = ok?'#16a34a':taxaErro>0.5?'#dc2626':'#d97706';
-        const icone = ok?'🟢':taxaErro>0.5?'🔴':'🟡';
-        const estado = ok?'Online':taxaErro>0.5?'Bloqueado':'Instável';
-        return \`<div style="background:white;border-radius:8px;padding:12px;box-shadow:var(--s);
-                             border-left:3px solid \${cor}">
-          <div style="display:flex;justify-content:space-between;align-items:center">
-            <span style="font-size:13px;font-weight:600;color:var(--navy)">\${s.fonte}</span>
-            <span style="font-size:11px;font-weight:700;color:\${cor}">\${icone} \${estado}</span>
-          </div>
-          <div style="font-size:11px;color:var(--g400);margin-top:5px">
-            \${s.total_imoveis||0} imóveis · \${s.total_rondas} rondas
-          </div>
-          <div style="display:flex;align-items:center;gap:6px;margin-top:6px">
-            <div style="flex:1;height:4px;background:var(--g200);border-radius:2px">
-              <div style="width:\${taxaSucesso}%;height:4px;background:\${cor};border-radius:2px"></div>
+        const hs = s.health_score||0;
+        const cor = hs>=80?'#16a34a':hs>=60?'#2ecc8a':hs>=40?'#d97706':'#dc2626';
+        const emoji = s.health_emoji||'🔴';
+        const label = s.health_label||'Desconhecido';
+        const taxa = s.taxa_sucesso||0;
+        const mediaItems = s.total_imoveis>0?Math.round(s.total_imoveis/Math.max(s.total_rondas,1)):0;
+        const tempoS = s.avg_ms ? (Math.round(s.avg_ms/100)/10)+'s' : 'N/D';
+        return `<div style="background:white;border-radius:10px;padding:14px;box-shadow:var(--s);border-left:4px solid ${cor}">
+          <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:8px">
+            <span style="font-size:13px;font-weight:700;color:var(--navy)">${s.fonte}</span>
+            <div style="text-align:right">
+              <div style="font-size:20px;font-weight:700;color:${cor}">${hs}</div>
+              <div style="font-size:10px;color:${cor}">${emoji} ${label}</div>
             </div>
-            <span style="font-size:10px;color:\${cor};font-weight:700">\${taxaSucesso}%</span>
           </div>
-          <div style="font-size:10px;color:var(--g400);margin-top:4px">
-            Última: \${(s.ultima_exec||'N/D').slice(0,16)}
-            \${s.avg_ms?\`· \${Math.round(s.avg_ms/1000*10)/10}s\`:''}
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
+            <div style="flex:1;height:6px;background:var(--g200);border-radius:3px">
+              <div style="width:${hs}%;height:6px;background:${cor};border-radius:3px"></div>
+            </div>
           </div>
-        </div>\`;
+          <div style="font-size:11px;color:var(--g600);display:grid;grid-template-columns:1fr 1fr;gap:3px">
+            <div>✔ Sucesso: <b>${taxa}%</b></div>
+            <div>⚡ Tempo: <b>${tempoS}</b></div>
+            <div>📦 Média: <b>${mediaItems} items</b></div>
+            <div style="color:var(--g400);font-size:10px">Última: ${(s.ultima_exec||'').slice(5,16)}</div>
+          </div>
+        </div>`;
       }).join('')}
     </div>\`;
 }

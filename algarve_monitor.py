@@ -22,27 +22,33 @@ from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from bs4 import BeautifulSoup
-import warnings
-warnings.filterwarnings("ignore", category=UserWarning, module="bs4")
 
 def safe_soup(html, fonte="?"):
-    """Parse HTML com validação — evita MarkupResemblesLocatorWarning."""
+    """
+    Parse HTML com validação completa.
+    Nunca chama BeautifulSoup com dados inválidos —
+    assim o MarkupResemblesLocatorWarning nunca aparece.
+    """
     if not html:
-        log.debug(f"  [{fonte}] HTML vazio")
         return None
     if not isinstance(html, str):
-        log.debug(f"  [{fonte}] HTML não é string: {type(html)}")
+        log.debug(f"safe_soup [{fonte}]: tipo inválido {type(html)}")
         return None
-    # Detecta se é URL ou caminho de ficheiro em vez de HTML
     stripped = html.strip()
-    if stripped.startswith(("http://","https://","/","./","../")) and len(stripped) < 500:
-        log.warning(f"  [{fonte}] Recebeu URL em vez de HTML: {stripped[:80]}")
+    # URL em vez de HTML
+    if stripped.startswith(("http://","https://")) and len(stripped) < 500:
+        log.warning(f"safe_soup [{fonte}]: recebido URL em vez de HTML: {stripped[:80]}")
         return None
-    if len(stripped) < 100:
-        log.debug(f"  [{fonte}] HTML demasiado curto: {repr(stripped[:50])}")
+    # Caminho de ficheiro
+    if stripped.startswith(("/","./","../")) and "\n" not in stripped and len(stripped) < 300:
+        log.warning(f"safe_soup [{fonte}]: parece caminho de ficheiro: {stripped[:80]}")
         return None
-    if "<" not in stripped:
-        log.warning(f"  [{fonte}] Sem tags HTML: {repr(stripped[:80])}")
+    # Muito curto para ser HTML útil
+    if len(stripped) < 50:
+        return None
+    # Sem tags HTML
+    if "<html" not in stripped.lower() and "<body" not in stripped.lower() and "<div" not in stripped.lower():
+        log.debug(f"safe_soup [{fonte}]: resposta sem tags HTML ({len(stripped)} chars)")
         return None
     return BeautifulSoup(html, "html.parser")
 from flask import (Flask, render_template_string, jsonify, request,
@@ -791,6 +797,45 @@ def get_imoveis(perfil_nome=None, limite=300):
                     if d.get(k): d[k] = d[k].isoformat()
                 result.append(d)
             return result
+
+def calcular_saude_scraper(taxa_sucesso, tempo_medio_ms, media_items, ultima_falha_dias):
+    """
+    Calcula pontuação de saúde de um scraper (0-100).
+    taxa_sucesso: 0-100 (%)
+    tempo_medio_ms: milliseconds
+    media_items: média de items por ronda
+    ultima_falha_dias: dias desde a última falha (None = nunca falhou)
+    """
+    score = 0
+    # Taxa de sucesso (0-50 pts)
+    score += min(50, taxa_sucesso * 0.5)
+    # Tempo médio (0-20 pts) — penaliza > 10s
+    if tempo_medio_ms:
+        t_score = max(0, 20 - (tempo_medio_ms / 1000))
+        score += min(20, t_score)
+    else:
+        score += 10  # neutral se não há dados
+    # Items médios (0-20 pts)
+    if media_items:
+        score += min(20, media_items * 0.5)
+    # Última falha (0-10 pts)
+    if ultima_falha_dias is None:
+        score += 10  # nunca falhou
+    elif ultima_falha_dias > 30:
+        score += 8
+    elif ultima_falha_dias > 7:
+        score += 5
+    elif ultima_falha_dias > 1:
+        score += 2
+    else:
+        score += 0  # falhou hoje
+
+    score = max(0, min(100, int(score)))
+    if score >= 80: label, emoji = "Excelente", "🟢"
+    elif score >= 60: label, emoji = "Bom", "🟢"
+    elif score >= 40: label, emoji = "Instável", "🟠"
+    else: label, emoji = "Problemático", "🔴"
+    return score, label, emoji
 
 def get_stats():
     with get_db() as conn:
@@ -2550,6 +2595,23 @@ def api_saude():
                 scrapers = [dict(r) for r in cur.fetchall()]
         # Add proxy stats
         proxy_info = get_proxy_stats()
+        # Calculate health score for each scraper
+        for s in scrapers:
+            taxa = float(s.get("taxa_sucesso") or 0)
+            tempo = float(s.get("avg_ms") or 0)
+            media = float(s.get("total_imoveis") or 0) / max(float(s.get("total_rondas") or 1), 1)
+            # Days since last error
+            ultima_falha = None
+            if s.get("ultima_exec"):
+                try:
+                    from datetime import datetime
+                    dt = datetime.fromisoformat(str(s["ultima_exec"])[:19])
+                    ultima_falha = (datetime.now() - dt).days
+                except: pass
+            score, label, emoji = calcular_saude_scraper(taxa, tempo, media, ultima_falha)
+            s["health_score"] = score
+            s["health_label"] = label
+            s["health_emoji"] = emoji
         return jsonify({"scrapers": scrapers, "proxies": proxy_info})
     except Exception as e:
         return jsonify({"erro": str(e)}), 500
