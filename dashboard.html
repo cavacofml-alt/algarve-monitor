@@ -1324,6 +1324,7 @@ async function carregarSaude(){
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px">
       ${scrapers.map(s=>{
         const taxaErro = s.rondas_com_erro/Math.max(s.total_rondas,1);
+        const taxaSucesso = Math.round((1-taxaErro)*100);
         const ok = s.total_imoveis>0 && taxaErro<0.5;
         const cor = ok?'#16a34a':taxaErro>0.5?'#dc2626':'#d97706';
         const icone = ok?'🟢':taxaErro>0.5?'🔴':'🟡';
@@ -1336,9 +1337,14 @@ async function carregarSaude(){
           </div>
           <div style="font-size:11px;color:var(--g400);margin-top:5px">
             \${s.total_imoveis||0} imóveis · \${s.total_rondas} rondas
-            \${s.rondas_com_erro>0?\`· <span style="color:#dc2626">\${s.rondas_com_erro} erros</span>\`:''}
           </div>
-          <div style="font-size:10px;color:var(--g400);margin-top:2px">Última: \${(s.ultima_exec||'N/D').slice(0,16)}</div>
+          <div style="display:flex;align-items:center;gap:6px;margin-top:6px">
+            <div style="flex:1;height:4px;background:var(--g200);border-radius:2px">
+              <div style="width:\${taxaSucesso}%;height:4px;background:\${cor};border-radius:2px"></div>
+            </div>
+            <span style="font-size:10px;color:\${cor};font-weight:700">\${taxaSucesso}%</span>
+          </div>
+          <div style="font-size:10px;color:var(--g400);margin-top:4px">Última: \${(s.ultima_exec||'N/D').slice(0,16)}</div>
         </div>\`;
       }).join('')}
     </div>\`;

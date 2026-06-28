@@ -248,7 +248,16 @@ def proxied_get(url, render=True, **kwargs):
 
     # Fallback direto
     _proxy_stats["direto"] = _proxy_stats.get("direto", 0) + 1
-    return requests.get(url, headers=random_headers(), timeout=15)
+    try:
+        return requests.get(url, headers=random_headers(), timeout=15)
+    except Exception as e:
+        log.warning(f"Fallback direto falhou: {e}")
+        # Return empty response
+        import requests as req
+        r = req.models.Response()
+        r.status_code = 0
+        r._content = b""
+        return r
 
 def get_proxy_stats():
     """Estatísticas de uso de cada proxy."""
@@ -674,11 +683,13 @@ def registar_mudanca_preco(imovel_id, p_ant, p_nov):
                         (imovel_id,p_ant,p_nov))
         conn.commit()
 
-def registar_log_scraper(fonte, perfil_nome, total, novos, paginas=1, erros=""):
+def registar_log_scraper(fonte, perfil_nome, total, novos, paginas=1, erros="", tempo_ms=0):
     with get_db() as conn:
         with conn.cursor() as cur:
-            cur.execute("INSERT INTO scraper_logs(fonte,perfil_nome,total,novos,paginas,erros) VALUES(%s,%s,%s,%s,%s,%s)",
-                        (fonte,perfil_nome,total,novos,paginas,erros))
+            cur.execute("""
+                INSERT INTO scraper_logs(fonte,perfil_nome,total,novos,paginas,erros)
+                VALUES(%s,%s,%s,%s,%s,%s)
+            """, (fonte,perfil_nome,total,novos,paginas,erros))
         conn.commit()
 
 def verificar_scrapers_com_falha():
@@ -1510,7 +1521,7 @@ def scrape_generico(nome, urls, perfil, seletores_extra=None):
             r = proxied_get(u, render=True)
             return _api_scrape_html(r.text, u, nome, seletores_extra)
         try:
-            items = com_retry(_fetch, tentativas=2)
+            items = com_retry(_fetch, n=2)
             items = [i for i in items if validar(i, perfil)]
             log.info(f"    {nome}: {len(items)} items de {url[:60]}")
             resultados.extend(items)
@@ -1521,6 +1532,11 @@ def scrape_generico(nome, urls, perfil, seletores_extra=None):
 
 def _api_scrape_html(html, base_url, fonte, extra_sels=None):
     """Extrai imóveis de HTML usando seletores CSS."""
+    if not html or len(html) < 200:
+        return []
+    if "<html" not in html.lower() and "<div" not in html.lower():
+        log.debug(f"  {fonte}: resposta inválida (não é HTML)")
+        return []
     soup = BeautifulSoup(html, "html.parser")
     items = []
     sels = (extra_sels or []) + [
@@ -1832,20 +1848,23 @@ def correr_scraper(args):
     nome, fn, perfil = args
     log.info(f"  → {nome}...")
     erros = ""; total = 0; pags = 1
+    t0 = time.time()
     try:
         r = fn(perfil)
         anuncios, pags = r if isinstance(r, tuple) else (r, 1)
         anuncios = [a for a in anuncios if validar(a, perfil)]
         total = len(anuncios)
+        tempo = round((time.time()-t0)*1000)
         if total == 0:
-            log.warning(f"    ⚠️ {nome}: 0 resultados")
+            log.warning(f"    ⚠️ {nome}: 0 resultados ({tempo}ms)")
         else:
-            log.info(f"    ✅ {nome}: {total} resultados")
+            log.info(f"    ✅ {nome}: {total} resultados ({tempo}ms)")
     except Exception as e:
         erros = str(e)
-        log.error(f"    ❌ {nome}: {e}")
+        tempo = round((time.time()-t0)*1000)
+        log.error(f"    ❌ {nome}: {e} ({tempo}ms)")
         anuncios = []
-    registar_log_scraper(nome, perfil["nome"], total, 0, pags, erros)
+    registar_log_scraper(nome, perfil["nome"], total, 0, pags, erros, tempo)
     return anuncios
 
 def verificar_perfil(perfil):
@@ -2628,7 +2647,23 @@ if __name__=="__main__":
     else: log.warning("DATABASE_URL não definida!")
     log.info(f"Login: {DASHBOARD_USERNAME} / {DASHBOARD_PASSWORD}")
     log.info(f"{len(SCRAPERS)} fontes | {len(PERFIS)} perfil(is) | cada {INTERVALO_HORAS}h")
-    threading.Thread(target=lambda:app.run(host="0.0.0.0",port=PORT,use_reloader=False),daemon=True).start()
+    def run_server():
+        try:
+            # Use gunicorn in production if available
+            import subprocess, sys
+            cmd = [sys.executable, "-m", "gunicorn",
+                   f"--bind=0.0.0.0:{PORT}",
+                   "--workers=2", "--threads=4",
+                   "--worker-class=gthread",
+                   "--timeout=120",
+                   "algarve_monitor:app"]
+            subprocess.Popen(cmd)
+            log.info(f"Dashboard (gunicorn) em http://localhost:{PORT}")
+        except Exception:
+            # Fallback to Flask dev server
+            app.run(host="0.0.0.0", port=PORT, use_reloader=False)
+            log.info(f"Dashboard (flask) em http://localhost:{PORT}")
+    threading.Thread(target=run_server, daemon=True).start()
     log.info(f"Dashboard em http://localhost:{PORT}")
     verificar()
     # Corre uma vez por dia às 08:00 — poupa pedidos ScraperAPI
