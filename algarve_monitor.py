@@ -1959,7 +1959,7 @@ def verificar():
                 return
             else:
                 # Tem outros proxies — continua com ZenRows/ScrapingBee
-                log.warning(f"⚠️ ScraperAPI esgotado — a usar ZenRows/ScrapingBee ({proxies_disponiveis-1} proxy(s) alternativos)")
+                log.warning(f"⚠️ ScraperAPI esgotado — a usar ZenRows/ScrapingBee ({proxies_disponiveis()-1} proxy(s) alternativos)")
 
         elif pct >= 80:
             log.warning(f"⚠️ ScraperAPI a {pct}% do limite!")
