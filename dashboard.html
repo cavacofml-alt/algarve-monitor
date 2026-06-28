@@ -146,6 +146,33 @@
     .btn-compare-clear{background:rgba(255,255,255,.2);color:white;border:none;padding:8px 12px;
                        border-radius:6px;cursor:pointer}
     .card.selected-compare{outline:3px solid var(--lime);outline-offset:2px}
+
+    /* Price slider */
+    .price-slider-wrap{display:flex;flex-direction:column;gap:4px;min-width:200px}
+    .price-slider-wrap label{font-size:11px;color:var(--g400);display:flex;justify-content:space-between}
+    .price-range{display:flex;gap:6px;align-items:center}
+    .price-range input[type=range]{flex:1;accent-color:var(--navy);height:4px}
+
+    /* Zone groups */
+    .zone-group{margin-bottom:24px}
+    .zone-header{display:flex;align-items:center;gap:10px;margin-bottom:12px;
+                 padding-bottom:8px;border-bottom:2px solid var(--g200)}
+    .zone-title{font-size:16px;font-weight:700;color:var(--navy)}
+    .zone-count{background:var(--navy);color:white;font-size:11px;font-weight:700;
+                padding:2px 8px;border-radius:12px}
+    .zone-avg{font-size:12px;color:var(--g400);margin-left:auto}
+
+    /* Opportunity badge */
+    .badge-opp{background:#fef3c7;color:#92400e;font-size:10px;font-weight:700;
+               padding:2px 7px;border-radius:12px;letter-spacing:.3px}
+
+    /* Share button */
+    .btn-share{padding:4px 8px;background:var(--ocean);color:white;border:none;
+               border-radius:5px;font-size:11px;cursor:pointer}
+
+    /* Notification dot */
+    .notif-dot{display:none;width:8px;height:8px;background:#ef4444;border-radius:50%;
+               position:absolute;top:2px;right:2px}
   </style>
 </head>
 <body>
@@ -174,6 +201,7 @@
   <div class="tab" onclick="showTab('mapa')">🗺️ Mapa</div>
   <div class="tab" onclick="showTab('mercado')">📊 Mercado</div>
   <div class="tab" onclick="showTab('visitas')">📅 Visitas</div>
+  <div class="tab" onclick="showTab('saude')">🩺 Saúde</div>
   <div class="tab" onclick="showTab('config')">⚙️ Configuração</div>
 </div>
 
@@ -181,7 +209,7 @@
 <div id="tab-imoveis" class="page active">
   <div class="stats" id="stats"></div>
   <div class="filters">
-    <input type="text" id="ft" placeholder="🔍 Pesquisar..." oninput="filtrar()">
+    <input type="text" id="ft" placeholder="🔍 Pesquisar... (ex: T2 piscina Tavira)" oninput="filtrarOuPesquisar()" style="min-width:200px">
     <select id="fz" onchange="filtrar()"><option value="">Todas as zonas</option></select>
     <select id="ff" onchange="filtrar()"><option value="">Todas as fontes</option></select>
     <select id="fe" onchange="filtrar()">
@@ -198,6 +226,19 @@
       <option value="preco_desc">Preço ↓</option>
       <option value="recente">Mais recentes</option>
     </select>
+    <div class="price-slider-wrap">
+      <label>
+        <span>💰 Preço</span>
+        <span id="slider-label">até <b id="slider-val">250k€</b></span>
+      </label>
+      <input type="range" id="fpreco" min="0" max="500000" step="5000" value="500000"
+             oninput="updateSlider(this.value);filtrar()">
+    </div>
+    <button onclick="toggleGrupos()" id="btn-grupos"
+      style="padding:7px 12px;border:1px solid var(--g200);border-radius:7px;
+             font-size:12px;background:white;cursor:pointer;white-space:nowrap">
+      🗺️ Agrupar por zona
+    </button>
     <div class="fcount" id="fcount"></div>
   </div>
   <div class="grid" id="grid"><div class="empty">A carregar...</div></div>
@@ -220,6 +261,25 @@
 <div id="tab-mercado" class="page">
   <div class="chart-grid" id="charts">
     <div class="empty" style="grid-column:1/-1">A carregar dados de mercado...</div>
+  </div>
+</div>
+
+<!-- SAÚDE DO SISTEMA -->
+<div id="tab-saude" class="page">
+  <h2 style="font-size:18px;color:var(--navy);margin-bottom:20px">🩺 Saúde do Sistema</h2>
+
+  <!-- Proxy stats -->
+  <div style="background:white;border-radius:10px;padding:20px;box-shadow:var(--s);margin-bottom:20px">
+    <h3 style="font-size:14px;font-weight:700;color:var(--navy);margin-bottom:14px">📡 Proxies</h3>
+    <div id="proxy-stats" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px">
+      <div class="empty">A carregar...</div>
+    </div>
+  </div>
+
+  <!-- Scraper health -->
+  <div style="background:white;border-radius:10px;padding:20px;box-shadow:var(--s)">
+    <h3 style="font-size:14px;font-weight:700;color:var(--navy);margin-bottom:14px">🤖 Scrapers (últimos 7 dias)</h3>
+    <div id="scraper-health"><div class="empty">A carregar...</div></div>
   </div>
 </div>
 
@@ -312,13 +372,14 @@ let todos=[], comparar_ids=[], mapaIniciado=false, chartsRendered=false;
 // ── TABS ──────────────────────────────────────────────────
 function showTab(name){
   document.querySelectorAll('.tab').forEach((t,i)=>{
-    t.classList.toggle('active',['imoveis','mapa','mercado','visitas','config'][i]===name);
+    t.classList.toggle('active',['imoveis','mapa','mercado','visitas','saude','config'][i]===name);
   });
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById('tab-'+name).classList.add('active');
   if(name==='mapa' && !mapaIniciado) iniciarMapa();
   if(name==='mercado' && !chartsRendered) carregarMercado();
   if(name==='visitas') carregarVisitas();
+  if(name==='saude') carregarSaude();
   if(name==='config') carregarConfig();
 }
 
@@ -337,6 +398,8 @@ async function carregar(){
   if(sf.options.length===1) fs.forEach(f=>sf.innerHTML+=`<option>${f}</option>`);
   filtrar();
   document.getElementById('live-badge').textContent='● '+new Date().toLocaleTimeString('pt-PT',{hour:'2-digit',minute:'2-digit'});
+  calcularMediaZona();
+  verificarNovos(imoveis.length);
 }
 
 function renderStats(s){
@@ -388,6 +451,10 @@ function renderCard(im){
   else badges+='<span class="badge b-n">Novo</span>';
   if(im.estado==='visitar') badges+='<span class="badge b-vis">👁 Visitar</span>';
   if(im.estado==='visitado') badges+='<span class="badge b-done">✅ Visitado</span>';
+  // Oportunidade: preço/m² muito abaixo da média da zona
+  if(im.preco_m2 && mediaZona[im.zona] && im.preco_m2 < mediaZona[im.zona]*0.8){
+    badges+='<span class="badge badge-opp">🎯 Oportunidade</span>';
+  }
   const pAnt=im.preco_antigo?`<span class="preco-a">${im.preco_antigo}</span>`:'';
   const extras=[];
   if(im.area_m2)  extras.push(`📐${im.area_m2}m²`);
@@ -415,6 +482,7 @@ function renderCard(im){
         <button class="btn-nota" onclick="saveNota('${im.id}',this)">💾</button>
         <button class="btn-detail" onclick="abrirDetalhe('${im.id}')">🔍</button>
         <button onclick="apagarImovel('${im.id}',this)" style="padding:4px 8px;background:#dc2626;color:white;border:none;border-radius:5px;font-size:11px;cursor:pointer" title="Apagar permanentemente">🗑</button>
+        <button class="btn-share" onclick="partilharImovel('${im.link}','${im.titulo}')" title="Partilhar">↗️</button>
       </div>
       <textarea class="card-nota" rows="2" placeholder="Notas..." id="n-${btoa(im.id).slice(0,12)}">${im.nota||''}</textarea>
     </div>
@@ -660,6 +728,40 @@ async function carregarMercado(){
     },options:{responsive:true,plugins:{legend:{position:'bottom'}},
       scales:{y:{ticks:{callback:v=>(v/1000)+'k€'}},x:{grid:{display:false}}}}});
   }
+
+  // Gráfico 4 — Scatter preço vs área
+  const scatter_data = todos.filter(i=>i.preco_valor&&i.area_m2&&i.disponivel).map(i=>({
+    x: i.area_m2, y: i.preco_valor/1000,
+    zona: i.zona, titulo: i.titulo
+  }));
+  if(scatter_data.length && document.getElementById('ch4')){
+    new Chart(document.getElementById('ch4'),{type:'scatter',data:{
+      datasets:[{label:'Imóveis',data:scatter_data,
+        backgroundColor:'#1a6b8a88',borderColor:'#1a6b8a',pointRadius:5,pointHoverRadius:8}]
+    },options:{responsive:true,plugins:{
+      legend:{display:false},
+      tooltip:{callbacks:{label:d=>`${d.raw.titulo?.slice(0,30)||''}: ${d.raw.y.toFixed(0)}k€ | ${d.raw.x}m²`}}
+    },scales:{
+      x:{title:{display:true,text:'Área (m²)'},grid:{color:'#f3f4f6'}},
+      y:{title:{display:true,text:'Preço (k€)'},ticks:{callback:v=>v+'k€'},grid:{color:'#f3f4f6'}}
+    }}});
+  }
+
+  // Gráfico 5 — Timeline de chegada
+  if(document.getElementById('ch5')){
+    const por_dia = {};
+    todos.forEach(i=>{
+      const d=new Date(i.criado_em).toLocaleDateString('pt-PT',{day:'2-digit',month:'short'});
+      por_dia[d]=(por_dia[d]||0)+1;
+    });
+    const dias=Object.keys(por_dia).slice(-14); // últimos 14 dias
+    new Chart(document.getElementById('ch5'),{type:'bar',data:{
+      labels:dias,
+      datasets:[{label:'Novos imóveis',data:dias.map(d=>por_dia[d]||0),
+        backgroundColor:'#2ecc8a',borderRadius:4}]
+    },options:{responsive:true,plugins:{legend:{display:false}},
+      scales:{y:{ticks:{stepSize:1}},x:{grid:{display:false}}}}});
+  }
 }
 
 // ── EXPORT ────────────────────────────────────────────────
@@ -694,6 +796,158 @@ async function apagarImovel(id, btn){
   }
 }
 
+// ── SLIDER DE PREÇO ─────────────────────────────────────
+let precoMax = 500000;
+function updateSlider(val){
+  precoMax = parseInt(val);
+  const label = val>=500000 ? 'sem limite' : (val/1000).toFixed(0)+'k€';
+  document.getElementById('slider-val').textContent = label;
+}
+
+// ── MÉDIA POR ZONA (para oportunidades) ──────────────────
+let mediaZona = {};
+function calcularMediaZona(){
+  const somas = {}, counts = {};
+  todos.forEach(i=>{
+    if(i.preco_m2 && i.zona){
+      somas[i.zona]=(somas[i.zona]||0)+i.preco_m2;
+      counts[i.zona]=(counts[i.zona]||0)+1;
+    }
+  });
+  mediaZona={};
+  Object.keys(somas).forEach(z=>mediaZona[z]=somas[z]/counts[z]);
+}
+
+// ── AGRUPAR POR ZONA ─────────────────────────────────────
+let modoGrupos = false;
+function toggleGrupos(){
+  modoGrupos = !modoGrupos;
+  const btn = document.getElementById('btn-grupos');
+  btn.style.background = modoGrupos ? 'var(--navy)' : 'white';
+  btn.style.color = modoGrupos ? 'white' : 'inherit';
+  filtrar();
+}
+
+function renderGrupos(lista){
+  const grupos = {};
+  lista.forEach(im=>{
+    const z = im.zona||'Outra';
+    if(!grupos[z]) grupos[z]=[];
+    grupos[z].push(im);
+  });
+  const grid = document.getElementById('grid');
+  grid.style.display = 'block';
+  grid.innerHTML = Object.entries(grupos)
+    .sort((a,b)=>b[1].length-a[1].length)
+    .map(([zona,ims])=>{
+      const avg = ims.filter(i=>i.preco_valor).reduce((s,i)=>s+(i.preco_valor||0),0) / (ims.filter(i=>i.preco_valor).length||1);
+      return `<div class="zone-group">
+        <div class="zone-header">
+          <span class="zone-title">📍 ${zona}</span>
+          <span class="zone-count">${ims.length}</span>
+          <span class="zone-avg">Média: ${avg>0?(avg/1000).toFixed(0)+'k€':'N/D'}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px">
+          ${ims.map(renderCard).join('')}
+        </div>
+      </div>`;
+    }).join('');
+}
+
+// ── PARTILHAR IMÓVEL ─────────────────────────────────────
+function partilharImovel(link, titulo){
+  const texto = encodeURIComponent(`🏠 ${titulo}\n${link}`);
+  const opts = [
+    {label:'📋 Copiar link', action:()=>{ navigator.clipboard.writeText(link); alert('Link copiado!'); }},
+    {label:'💬 WhatsApp',    action:()=>window.open(`https://wa.me/?text=${texto}`)},
+    {label:'📧 Email',       action:()=>window.open(`mailto:?subject=${encodeURIComponent(titulo)}&body=${texto}`)},
+  ];
+  const menu = document.createElement('div');
+  menu.style.cssText='position:fixed;z-index:9999;background:white;border-radius:10px;padding:8px;box-shadow:0 8px 24px rgba(0,0,0,.2);';
+  menu.style.top='50%'; menu.style.left='50%'; menu.style.transform='translate(-50%,-50%)';
+  opts.forEach(o=>{
+    const btn=document.createElement('button');
+    btn.textContent=o.label;
+    btn.style.cssText='display:block;width:100%;padding:10px 20px;border:none;background:none;cursor:pointer;font-size:14px;text-align:left;border-radius:6px;';
+    btn.onmouseover=()=>btn.style.background='var(--g100)';
+    btn.onmouseout=()=>btn.style.background='none';
+    btn.onclick=()=>{ o.action(); document.body.removeChild(overlay); };
+    menu.appendChild(btn);
+  });
+  const overlay=document.createElement('div');
+  overlay.style.cssText='position:fixed;inset:0;z-index:9998;background:rgba(0,0,0,.3)';
+  overlay.onclick=()=>document.body.removeChild(overlay);
+  overlay.appendChild(menu);
+  document.body.appendChild(overlay);
+}
+
+// ── NOTIFICAÇÕES NO BROWSER ──────────────────────────────
+let ultimoTotal = 0;
+function verificarNovos(total){
+  if(ultimoTotal > 0 && total > ultimoTotal){
+    const novos = total - ultimoTotal;
+    // Notificação nativa do browser
+    if(Notification.permission==='granted'){
+      new Notification(`🏠 ${novos} novo(s) imóvel(is)!`,{
+        body:`Aparecer${novos>1?'am':'eu'} ${novos} imóvel(is) novo(s) no Monitor Algarve`,
+        icon:'/favicon.ico'
+      });
+    }
+    // Badge visual no título
+    document.title = `(${novos} novos) Monitor Imóveis`;
+    setTimeout(()=>document.title='Monitor Imóveis — Algarve', 5000);
+  }
+  ultimoTotal = total;
+}
+
+// Pedir permissão de notificações
+if('Notification' in window && Notification.permission==='default'){
+  Notification.requestPermission();
+}
+
+// ── OVERRIDE FILTRAR com slider e grupos ─────────────────
+const filtrarOriginal = filtrar;
+filtrar = function(){
+  const txt=document.getElementById('ft').value.toLowerCase();
+  const zona=document.getElementById('fz').value;
+  const fonte=document.getElementById('ff').value;
+  const est=document.getElementById('fe').value;
+  const ord=document.getElementById('fo').value;
+  const precoLimite = precoMax;
+
+  let lista=todos.filter(i=>{
+    if(txt&&!(i.titulo||'').toLowerCase().includes(txt)) return false;
+    if(zona&&i.zona!==zona) return false;
+    if(fonte&&i.fonte!==fonte) return false;
+    if(precoLimite<500000 && i.preco_valor && i.preco_valor>precoLimite) return false;
+    if(est==='favorito'&&!i.favorito) return false;
+    if(est==='removido'&&i.disponivel) return false;
+    if(['visitar','visitado','rejeitado'].includes(est)&&i.estado!==est) return false;
+    return true;
+  });
+
+  if(ord==='score')      lista.sort((a,b)=>(b.score||0)-(a.score||0));
+  if(ord==='preco_asc')  lista.sort((a,b)=>(a.preco_valor||999999)-(b.preco_valor||999999));
+  if(ord==='preco_desc') lista.sort((a,b)=>(b.preco_valor||0)-(a.preco_valor||0));
+  if(ord==='recente')    lista.sort((a,b)=>new Date(b.criado_em)-new Date(a.criado_em));
+
+  document.getElementById('fcount').innerHTML=`<b>${lista.length}</b> imóveis`;
+  const grid=document.getElementById('grid');
+
+  if(!lista.length){
+    grid.style.display='grid';
+    grid.innerHTML='<div class="empty">Nenhum imóvel.</div>';
+    return;
+  }
+
+  if(modoGrupos){
+    renderGrupos(lista);
+  } else {
+    grid.style.display='grid';
+    grid.innerHTML=lista.map(renderCard).join('');
+  }
+};
+
 carregar();
 setInterval(carregar, 60000);
 
@@ -710,118 +964,191 @@ const TIPOS_DISPONIVEIS = [
   {slug:"moradias-e-vivendas", label:"Moradia/Vivenda"}
 ];
 
-const IMOBILIARIAS_SOCIAL = [
+const IMOBILIARIAS_GRUPOS = [
   {
-    nome: "Casas do Sotavento",
-    logo: "🏠",
-    web: "https://www.casasdosotavento.pt/imoveis/venda/",
-    facebook: "https://www.facebook.com/casasdosotavento",
-    instagram: "https://www.instagram.com/casasdosotavento/",
+    grupo: "📡 Portais Agregadores",
+    items: [
+      { nome:"Idealista", logo:"🔍", web:"https://www.idealista.pt/comprar-casas/faro/com-apartamentos/?preco-max=250000", facebook:"https://www.facebook.com/idealista.pt", instagram:"https://www.instagram.com/idealista_pt/" },
+      { nome:"Imovirtual", logo:"🏙️", web:"https://www.imovirtual.com/comprar/apartamento/faro/?priceMax=250000", facebook:"https://www.facebook.com/imovirtual", instagram:"https://www.instagram.com/imovirtual/" },
+      { nome:"Casa SAPO", logo:"🐸", web:"https://casa.sapo.pt/comprar-apartamentos/faro/?precomax=250000", facebook:"https://www.facebook.com/casasapo", instagram:"https://www.instagram.com/casasapo/" },
+      { nome:"SuperCasa", logo:"⭐", web:"https://supercasa.pt/comprar-casas/faro/com-apartamentos/?preco-max=250000", facebook:"https://www.facebook.com/supercasapt", instagram:"https://www.instagram.com/supercasa.pt/" },
+    ]
   },
   {
-    nome: "ERA Imobiliária",
-    logo: "🔑",
-    web: "https://www.era.pt/comprar/imoveis/faro/",
-    facebook: "https://www.facebook.com/eraimobiliaria",
-    instagram: "https://www.instagram.com/eraportugal/",
-    linkedin: "https://www.linkedin.com/company/285323",
-    youtube: "https://www.youtube.com/user/eraimobiliaria",
+    grupo: "🏢 Redes Nacionais / Internacionais",
+    items: [
+      { nome:"RE/MAX Portugal", logo:"🏡", web:"https://www.remax.pt/comprar/faro/", facebook:"https://www.facebook.com/remaxportugal", instagram:"https://www.instagram.com/remaxportugal/" },
+      { nome:"ERA Imobiliária", logo:"🔑", web:"https://www.era.pt/comprar/imoveis/faro/", facebook:"https://www.facebook.com/eraimobiliaria", instagram:"https://www.instagram.com/eraportugal/", linkedin:"https://www.linkedin.com/company/285323", youtube:"https://www.youtube.com/user/eraimobiliaria" },
+      { nome:"KW Portugal", logo:"🌟", web:"https://www.kwportugal.pt/pt/pesquisa/?localizacao=faro&tipo=comprar", facebook:"https://facebook.com/kwportugal/", instagram:"https://www.instagram.com/kellerwilliamsportugal/", linkedin:"https://www.linkedin.com/company/kwportugal/", youtube:"https://www.youtube.com/@kwportugal8964" },
+      { nome:"Engel & Völkers", logo:"💎", web:"https://www.engelvoelkers.com/pt/en/search/?adType=BUY&country=PRT&city=faro&priceMax=250000", facebook:"https://www.facebook.com/engelvoelkers.portugal", instagram:"https://www.instagram.com/engelvoelkersportugal/", linkedin:"https://www.linkedin.com/company/engel-volkers-portugal" },
+      { nome:"Coldwell Banker Portugal", logo:"🏦", web:"https://www.coldwellbanker.pt/imoveis?transacao=compra&distrito=faro", facebook:"https://www.facebook.com/ColdwellBankerPortugal", instagram:"https://www.instagram.com/coldwellbankerportugal/" },
+      { nome:"Sotheby's International", logo:"👑", web:"https://www.sothebysrealty.pt/imoveis/compra", facebook:"https://www.facebook.com/SothebysRealtyPortugal", instagram:"https://www.instagram.com/sothebysrealtyportugal/" },
+      { nome:"IAD Portugal", logo:"🔵", web:"https://www.iadfrance.pt/comprar/apartamento/algarve", facebook:"https://www.facebook.com/iadportugal", instagram:"https://www.instagram.com/iad_portugal/" },
+      { nome:"Fine & Country", logo:"🎩", web:"https://www.fineandcountry.com/pt/imoveis-para-venda/algarve", facebook:"https://www.facebook.com/fineandcountryportugal", instagram:"https://www.instagram.com/fineandcountryportugal/" },
+      { nome:"Century 21 Portugal", logo:"🏅", web:"https://www.century21.pt/imoveis/?local=faro&tipo=comprar", facebook:"https://www.facebook.com/Century21Portugal", instagram:"https://www.instagram.com/century21portugal/" },
+      { nome:"Chave Nova", logo:"🗝️", web:"https://www.chavanova.pt/imoveis?distrito=faro&tipo=venda", facebook:"https://www.facebook.com/chavanova", instagram:"https://www.instagram.com/chavanova/" },
+      { nome:"Arcada Imobiliária", logo:"🏛️", web:"https://www.arcada.com.pt/imoveis?zona=algarve&tipo=venda", facebook:"https://www.facebook.com/arcadaimobiliaria", instagram:"https://www.instagram.com/arcadaimobiliaria/" },
+    ]
   },
   {
-    nome: "RE/MAX Portugal",
-    logo: "🏡",
-    web: "https://www.remax.pt/comprar/faro/",
-    facebook: "https://www.facebook.com/remaxportugal",
-    instagram: "https://www.instagram.com/remaxportugal/",
+    grupo: "🌍 Algarve — Toda a Região",
+    items: [
+      { nome:"Garvetur", logo:"🌞", web:"https://www.garvetur.pt/imoveis/venda", facebook:"https://www.facebook.com/garvetur", instagram:"https://www.instagram.com/garvetur/" },
+      { nome:"Villas Key", logo:"🔑", web:"https://www.villaskey.com/venda", facebook:"https://www.facebook.com/villaskey", instagram:"https://www.instagram.com/villaskey/" },
+      { nome:"Dils Portugal", logo:"🏢", web:"https://www.dils.pt/imoveis?tipo=venda&zona=algarve", facebook:"https://www.facebook.com/dilsportugal", instagram:"https://www.instagram.com/dils_portugal/" },
+      { nome:"BuyMe Property Algarve", logo:"🛒", web:"https://www.buymeproperty.pt/comprar", facebook:"https://www.facebook.com/buymeproperty", instagram:"https://www.instagram.com/buymeproperty/" },
+      { nome:"Algarve Property", logo:"🌊", web:"https://www.algarveproperty.com/properties-for-sale", facebook:"https://www.facebook.com/algarveproperty", instagram:"https://www.instagram.com/algarveproperty/" },
+      { nome:"Nurisimo", logo:"🌴", web:"https://www.nurisimo.com/venda", facebook:"https://www.facebook.com/nurisimo", instagram:"https://www.instagram.com/nurisimo/" },
+      { nome:"Golden Properties", logo:"✨", web:"https://www.goldenproperties.pt/imoveis?tipo=venda", facebook:"https://www.facebook.com/goldenpropertiesalgarve", instagram:"https://www.instagram.com/goldenpropertiesalgarve/" },
+      { nome:"Sortami", logo:"🏡", web:"https://www.sortami.pt/imoveis", facebook:"https://www.facebook.com/sortami", instagram:"https://www.instagram.com/sortami/" },
+      { nome:"Algarve Real Estate (ARE)", logo:"🏠", web:"https://www.algarverealestate.com/properties-for-sale", facebook:"https://www.facebook.com/algarverealestate", instagram:"https://www.instagram.com/algarverealestate/" },
+      { nome:"Espaços Algarve", logo:"📐", web:"https://www.espacos-algarve.com/comprar", facebook:"https://www.facebook.com/espacosalgarve", instagram:"https://www.instagram.com/espacosalgarve/" },
+      { nome:"Rede Real Imobiliária", logo:"🔗", web:"https://www.redereal.com/imoveis?tipo=venda&zona=algarve", facebook:"https://www.facebook.com/rederealimobiliaria", instagram:"https://www.instagram.com/redereal/" },
+      { nome:"D'Alma Portuguesa", logo:"❤️", web:"https://www.dalmaportuguesa.com/imoveis", facebook:"https://www.facebook.com/dalmaportuguesa", instagram:"https://www.instagram.com/dalmaportuguesa/" },
+      { nome:"VAP Real Estate", logo:"🏗️", web:"https://www.vaprealestate.com/properties", facebook:"https://www.facebook.com/vaprealestate", instagram:"https://www.instagram.com/vaprealestate/" },
+      { nome:"Tripalgarve Real Estate", logo:"🌿", web:"https://www.tripalgarve.com/properties-for-sale", facebook:"https://www.facebook.com/tripalgarve", instagram:"https://www.instagram.com/tripalgarve/" },
+      { nome:"Algarve Dream Property", logo:"💭", web:"https://www.algarvedreamproperty.com/for-sale", facebook:"https://www.facebook.com/algarvedreamproperty", instagram:"https://www.instagram.com/algarvedreamproperty/" },
+    ]
   },
   {
-    nome: "KW Portugal",
-    logo: "🌟",
-    web: "https://www.kwportugal.pt/pt/pesquisa/?localizacao=faro&tipo=comprar",
-    facebook: "https://facebook.com/kwportugal/",
-    instagram: "https://www.instagram.com/kellerwilliamsportugal/",
-    linkedin: "https://www.linkedin.com/company/kwportugal/",
-    youtube: "https://www.youtube.com/@kwportugal8964",
+    grupo: "🌊 Barlavento (Lagos, Portimão, Silves, Aljezur)",
+    items: [
+      { nome:"Mimosa Properties", logo:"🌸", web:"https://www.mimosaproperties.com/properties-for-sale", facebook:"https://www.facebook.com/mimosaproperties", instagram:"https://www.instagram.com/mimosaproperties/" },
+      { nome:"Algarve Unique Properties", logo:"💠", web:"https://www.algarveuniqueproperties.com/for-sale", facebook:"https://www.facebook.com/algarveuniqueproperties", instagram:"https://www.instagram.com/algarveuniqueproperties/" },
+      { nome:"Boto Properties", logo:"🐬", web:"https://www.botoproperties.com/properties-for-sale", facebook:"https://www.facebook.com/botoproperties", instagram:"https://www.instagram.com/botoproperties/" },
+      { nome:"Vernon Algarve", logo:"🏖️", web:"https://www.vernonalgarve.com/for-sale", facebook:"https://www.facebook.com/vernonalgarve", instagram:"https://www.instagram.com/vernonalgarve/" },
+      { nome:"Sunpoint Properties", logo:"☀️", web:"https://www.sunpointproperties.com/for-sale", facebook:"https://www.facebook.com/sunpointproperties", instagram:"https://www.instagram.com/sunpointproperties/" },
+      { nome:"A1 Algarve Real Estate", logo:"🅰️", web:"https://www.a1-algarve.com/properties", facebook:"https://www.facebook.com/a1algarve", instagram:"https://www.instagram.com/a1algarve/" },
+    ]
   },
   {
-    nome: "Engel & Völkers",
-    logo: "💎",
-    web: "https://www.engelvoelkers.com/pt/en/search/?adType=BUY&country=PRT&city=faro",
-    facebook: "https://www.facebook.com/engelvoelkers.portugal",
-    instagram: "https://www.instagram.com/engelvoelkersportugal/",
-    linkedin: "https://www.linkedin.com/company/engel-volkers-portugal",
+    grupo: "🏌️ Triângulo Dourado (Vilamoura, Q. do Lago, Vale do Lobo)",
+    items: [
+      { nome:"QP Savills", logo:"🏆", web:"https://www.quintaproperty.com/property-for-sale", facebook:"https://www.facebook.com/qpsavills", instagram:"https://www.instagram.com/qpsavills/" },
+      { nome:"JPP Properties", logo:"🎯", web:"https://www.jppproperties.com/buy", facebook:"https://www.facebook.com/jppproperties", instagram:"https://www.instagram.com/jppproperties/" },
+      { nome:"Your Luxury Property", logo:"✨", web:"https://www.yourluxuryproperty.pt/imoveis-para-venda", facebook:"https://www.facebook.com/yourluxuryproperty", instagram:"https://www.instagram.com/yourluxuryproperty/" },
+      { nome:"Barra Prime", logo:"💛", web:"https://www.barraprime.pt/imoveis-para-venda", facebook:"https://www.facebook.com/barraprime", instagram:"https://www.instagram.com/barraprime/" },
+      { nome:"Inside-Villas", logo:"🏡", web:"https://www.inside-villas.com/for-sale", facebook:"https://www.facebook.com/insidevillas", instagram:"https://www.instagram.com/inside_villas/" },
+      { nome:"Cluttons Algarve", logo:"🔷", web:"https://www.cluttons.com/algarve/properties-for-sale", facebook:"https://www.facebook.com/cluttonsalgarve", instagram:"https://www.instagram.com/cluttonsalgarve/" },
+      { nome:"Chestertons Algarve", logo:"🔶", web:"https://www.chestertons.com/algarve/properties-for-sale", facebook:"https://www.facebook.com/chestertonsalgarve", instagram:"https://www.instagram.com/chestertonsalgarve/" },
+    ]
   },
   {
-    nome: "AlgarVila",
-    logo: "🌊",
-    web: "https://www.algarvila.com/en-gb/properties",
-    facebook: "https://www.facebook.com/algarvila",
-    instagram: "https://www.instagram.com/algarvila/",
-  },
-  {
-    nome: "Villas Tavira",
-    logo: "🏘️",
-    web: "https://www.villastavira.pt/imoveis",
-    facebook: "https://www.facebook.com/villastavira",
-    instagram: "https://www.instagram.com/villastavira/",
-  },
-  {
-    nome: "LNHouse",
-    logo: "🔵",
-    web: "https://www.lnhouse.pt/imoveis",
-    facebook: "https://www.facebook.com/lnhouse.pt",
-    instagram: "https://www.instagram.com/lnhouse.pt/",
-  },
-  {
-    nome: "Idealista",
-    logo: "🔍",
-    web: "https://www.idealista.pt/comprar-casas/faro/com-apartamentos/?preco-max=250000",
-    facebook: "https://www.facebook.com/idealista.pt",
-    instagram: "https://www.instagram.com/idealista_pt/",
-  },
-  {
-    nome: "Imovirtual",
-    logo: "🏙️",
-    web: "https://www.imovirtual.com/comprar/apartamento/faro/?priceMax=250000",
-    facebook: "https://www.facebook.com/imovirtual",
-    instagram: "https://www.instagram.com/imovirtual/",
-  },
-  {
-    nome: "Casa SAPO",
-    logo: "🐸",
-    web: "https://casa.sapo.pt/comprar-apartamentos/faro/?precomax=250000",
-    facebook: "https://www.facebook.com/casasapo",
-    instagram: "https://www.instagram.com/casasapo/",
-  },
-  {
-    nome: "SuperCasa",
-    logo: "⭐",
-    web: "https://supercasa.pt/comprar-casas/faro/com-apartamentos/?preco-max=250000",
-    facebook: "https://www.facebook.com/supercasapt",
-    instagram: "https://www.instagram.com/supercasa.pt/",
+    grupo: "🏛️ Sotavento (Faro, Tavira, Olhão, VRSA, Castro Marim)",
+    items: [
+      { nome:"Casas do Sotavento", logo:"🏠", web:"https://www.casasdosotavento.pt/imoveis/venda/", facebook:"https://www.facebook.com/casasdosotavento", instagram:"https://www.instagram.com/casasdosotavento/" },
+      { nome:"AlgarVila (Tavira)", logo:"🕌", web:"https://www.algarvila.com/en-gb/properties", facebook:"https://www.facebook.com/algarvila", instagram:"https://www.instagram.com/algarvila/" },
+      { nome:"Villas Tavira", logo:"🌅", web:"https://www.villastavira.pt/imoveis", facebook:"https://www.facebook.com/villastavira", instagram:"https://www.instagram.com/villastavira/" },
+      { nome:"Imocusto", logo:"💰", web:"https://www.imocusto.pt/comprar", facebook:"https://www.facebook.com/imocusto", instagram:"https://www.instagram.com/imocusto/" },
+      { nome:"LNHouse", logo:"🔵", web:"https://www.lnhouse.pt/imoveis", facebook:"https://www.facebook.com/lnhouse.pt", instagram:"https://www.instagram.com/lnhouse.pt/" },
+    ]
   },
 ];
+const IMOBILIARIAS_SOCIAL = IMOBILIARIAS_GRUPOS.flatMap(g=>g.items);
 
 function renderSocialGrid(){
   const grid = document.getElementById('social-grid');
   if(!grid) return;
-  grid.innerHTML = IMOBILIARIAS_SOCIAL.map(im=>{
-    const redes = [];
-    if(im.web)       redes.push(`<a href="${im.web}" target="_blank" style="text-decoration:none" title="Website">🌐</a>`);
-    if(im.facebook)  redes.push(`<a href="${im.facebook}" target="_blank" style="text-decoration:none" title="Facebook">📘</a>`);
-    if(im.instagram) redes.push(`<a href="${im.instagram}" target="_blank" style="text-decoration:none" title="Instagram">📸</a>`);
-    if(im.linkedin)  redes.push(`<a href="${im.linkedin}" target="_blank" style="text-decoration:none" title="LinkedIn">💼</a>`);
-    if(im.youtube)   redes.push(`<a href="${im.youtube}" target="_blank" style="text-decoration:none" title="YouTube">▶️</a>`);
-    return `
-      <div style="background:white;border-radius:10px;padding:16px;box-shadow:var(--s);
-                  display:flex;align-items:center;justify-content:space-between;gap:10px">
-        <div style="display:flex;align-items:center;gap:10px">
-          <span style="font-size:24px">${im.logo}</span>
-          <span style="font-size:14px;font-weight:600;color:var(--navy)">${im.nome}</span>
-        </div>
-        <div style="display:flex;gap:10px;font-size:20px">${redes.join('')}</div>
-      </div>`;
-  }).join('');
+  grid.innerHTML = IMOBILIARIAS_GRUPOS.map(g=>`
+    <div style="grid-column:1/-1;margin-top:8px">
+      <h3 style="font-size:15px;font-weight:700;color:var(--navy);margin-bottom:12px;
+                 padding-bottom:8px;border-bottom:2px solid var(--g200)">${g.grupo}
+        <span style="font-size:12px;font-weight:400;color:var(--g400);margin-left:8px">${g.items.length} imobiliárias</span>
+      </h3>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px">
+        ${g.items.map(im=>{
+          const redes=[];
+          if(im.web)       redes.push(`<a href="${im.web}" target="_blank" style="text-decoration:none;font-size:18px" title="Website">🌐</a>`);
+          if(im.facebook)  redes.push(`<a href="${im.facebook}" target="_blank" style="text-decoration:none;font-size:18px" title="Facebook">📘</a>`);
+          if(im.instagram) redes.push(`<a href="${im.instagram}" target="_blank" style="text-decoration:none;font-size:18px" title="Instagram">📸</a>`);
+          if(im.linkedin)  redes.push(`<a href="${im.linkedin}" target="_blank" style="text-decoration:none;font-size:18px" title="LinkedIn">💼</a>`);
+          if(im.youtube)   redes.push(`<a href="${im.youtube}" target="_blank" style="text-decoration:none;font-size:18px" title="YouTube">▶️</a>`);
+          return `<div style="background:white;border-radius:8px;padding:12px 14px;box-shadow:var(--s);
+                              display:flex;align-items:center;justify-content:space-between;gap:8px">
+            <div style="display:flex;align-items:center;gap:8px;min-width:0">
+              <span style="font-size:20px;flex-shrink:0">${im.logo}</span>
+              <span style="font-size:12px;font-weight:600;color:var(--navy);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${im.nome}</span>
+            </div>
+            <div style="display:flex;gap:6px;flex-shrink:0">${redes.join('')}</div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`).join('');
+}
+
+// ── SAÚDE DO SISTEMA ─────────────────────────────────────
+async function carregarSaude(){
+  const d = await fetch('/api/saude').then(r=>r.json());
+
+  // Proxy stats
+  const proxies = d.proxies || {};
+  const proxyEl = document.getElementById('proxy-stats');
+  if(Object.keys(proxies).length){
+    proxyEl.innerHTML = Object.entries(proxies).map(([nome,s])=>`
+      <div style="background:var(--g50);border-radius:8px;padding:12px;text-align:center">
+        <div style="font-size:18px;font-weight:700;color:var(--navy)">${s.pedidos}</div>
+        <div style="font-size:11px;color:var(--g400);margin:2px 0">${nome}</div>
+        <div style="font-size:12px;font-weight:600;color:${s.pct>50?'var(--lime)':'var(--amber)'}">${s.pct}%</div>
+      </div>`).join('');
+  } else {
+    proxyEl.innerHTML = '<div style="color:var(--g400);font-size:13px">Nenhuma ronda executada ainda.</div>';
+  }
+
+  // Scraper health
+  const scrapers = d.scrapers || [];
+  const el = document.getElementById('scraper-health');
+  if(!scrapers.length){
+    el.innerHTML='<div class="empty">Nenhum dado ainda. Aguarda a próxima ronda.</div>'; return;
+  }
+  el.innerHTML = `
+    <table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead>
+        <tr style="background:var(--navy);color:white">
+          <th style="padding:8px;text-align:left">Scraper</th>
+          <th style="padding:8px;text-align:center">Imóveis</th>
+          <th style="padding:8px;text-align:center">Rondas</th>
+          <th style="padding:8px;text-align:center">Erros</th>
+          <th style="padding:8px;text-align:left">Última execução</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${scrapers.map(s=>{
+          const taxaErro = s.rondas_com_erro/Math.max(s.total_rondas,1);
+          const cor = taxaErro>0.5?'#fee2e2':taxaErro>0.2?'#fef3c7':'#f0fdf4';
+          const icone = s.total_imoveis>0?'✅':taxaErro>0.5?'❌':'⚠️';
+          return `<tr style="background:${cor};border-bottom:1px solid var(--g200)">
+            <td style="padding:7px 8px;font-weight:500">${icone} ${s.fonte}</td>
+            <td style="padding:7px 8px;text-align:center">${s.total_imoveis||0}</td>
+            <td style="padding:7px 8px;text-align:center">${s.total_rondas}</td>
+            <td style="padding:7px 8px;text-align:center;color:${s.rondas_com_erro>0?'#dc2626':'#16a34a'}">${s.rondas_com_erro}</td>
+            <td style="padding:7px 8px;color:var(--g400)">${(s.ultima_exec||'').slice(0,16)}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>`;
+}
+
+// ── PESQUISA SEMÂNTICA ────────────────────────────────────
+let searchTimeout = null;
+async function filtrarOuPesquisar(){
+  const q = document.getElementById('ft').value.trim();
+  clearTimeout(searchTimeout);
+
+  // Se query longa (>10 chars e tem espaços) usa pesquisa semântica
+  if(q.length > 10 && q.includes(' ')){
+    searchTimeout = setTimeout(async ()=>{
+      const r = await fetch(`/api/search?q=${encodeURIComponent(q)}`).then(r=>r.json());
+      if(Array.isArray(r) && r.length > 0){
+        document.getElementById('fcount').innerHTML=`<b>${r.length}</b> resultados semânticos`;
+        const grid = document.getElementById('grid');
+        grid.style.display='grid';
+        grid.innerHTML = r.map(renderCard).join('');
+        return;
+      }
+    }, 500);
+  }
+  // Senão usa filtro normal
+  filtrar();
 }
 
 async function carregarConfig(){

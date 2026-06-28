@@ -24,13 +24,13 @@ from email.mime.multipart import MIMEMultipart
 from bs4 import BeautifulSoup
 from flask import (Flask, render_template_string, jsonify, request,
                    session, redirect, url_for, make_response)
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, WebDriverException
+# Playwright replaces Selenium for better JS rendering
+try:
+    from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
+    log.warning("Playwright não instalado — a usar requests")
 from webdriver_manager.chrome import ChromeDriverManager
 
 logging.basicConfig(level=logging.INFO,
@@ -49,6 +49,8 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 SCRAPERAPI_KEY     = os.getenv("SCRAPERAPI_KEY", "")
 ZENROWS_KEY        = os.getenv("ZENROWS_KEY", "")
 SCRAPINGBEE_KEY    = os.getenv("SCRAPINGBEE_KEY", "")
+CRAWLBASE_KEY      = os.getenv("CRAWLBASE_KEY", "")
+SCRAPEDO_KEY       = os.getenv("SCRAPEDO_KEY", "")
 PORT               = int(os.getenv("PORT", "8080"))
 GOOGLE_MAPS_KEY    = os.getenv("GOOGLE_MAPS_KEY", "")    # opcional para geocoding
 VAPID_PUBLIC_KEY   = os.getenv("VAPID_PUBLIC_KEY", "")
@@ -108,43 +110,151 @@ def random_headers():
             "Accept": "text/html,application/xhtml+xml,*/*;q=0.8"}
 
 _proxy_counter = 0
-_proxy_stats = {"scraperapi":0,"zenrows":0,"scrapingbee":0,"direto":0}
+_proxy_stats = {}
+_proxy_success = {}
+_proxy_fail = {}
+_proxy_time = {}
+_proxy_cooldown = {}  # timestamp until which proxy is in cooldown
 
-def proxied_get(url, render=False, **kwargs):
-    """Rotação automática entre ScraperAPI, ZenRows e ScrapingBee."""
+PROXY_COOLDOWN_SECONDS = 300  # 5 min cooldown after failures
+
+# HTTP Cache — evita pedidos repetidos em 30 minutos
+_http_cache = {}
+_http_cache_ttl = 1800  # 30 minutos
+
+def cache_get(url):
+    if url in _http_cache:
+        ts, data = _http_cache[url]
+        if time.time() - ts < _http_cache_ttl:
+            return data
+    return None
+
+def cache_set(url, data):
+    _http_cache[url] = (time.time(), data)
+    # Limpar cache antigo (max 200 entradas)
+    if len(_http_cache) > 200:
+        oldest = sorted(_http_cache.keys(), key=lambda k: _http_cache[k][0])[:50]
+        for k in oldest: del _http_cache[k]
+
+def registar_proxy_resultado(proxy, sucesso, tempo_ms):
+    """Regista resultado de um pedido para o proxy manager."""
+    _proxy_stats[proxy] = _proxy_stats.get(proxy, 0) + 1
+    if sucesso:
+        _proxy_success[proxy] = _proxy_success.get(proxy, 0) + 1
+    else:
+        _proxy_fail[proxy] = _proxy_fail.get(proxy, 0) + 1
+        # Cooldown se falhar 3+ vezes seguidas
+        falhas = _proxy_fail.get(proxy, 0)
+        sucessos = _proxy_success.get(proxy, 0)
+        total = _proxy_stats.get(proxy, 1)
+        taxa = sucessos / total if total > 0 else 0
+        if taxa < 0.3 and total >= 5:
+            _proxy_cooldown[proxy] = time.time() + PROXY_COOLDOWN_SECONDS
+            log.warning(f"⏸ Proxy {proxy} em cooldown ({taxa*100:.0f}% sucesso)")
+    # Tempo médio
+    if proxy not in _proxy_time:
+        _proxy_time[proxy] = []
+    _proxy_time[proxy].append(tempo_ms)
+    if len(_proxy_time[proxy]) > 20:
+        _proxy_time[proxy] = _proxy_time[proxy][-20:]
+
+def proxied_get(url, render=True, **kwargs):
+    """
+    Rotação automática entre todos os proxies disponíveis:
+    ScraperAPI → ZenRows → ScrapingBee → Crawlbase → Scrape.do → direto
+    Usa apenas os que têm chave configurada.
+    """
     global _proxy_counter
     proxies = []
     if SCRAPERAPI_KEY:  proxies.append("scraperapi")
     if ZENROWS_KEY:     proxies.append("zenrows")
     if SCRAPINGBEE_KEY: proxies.append("scrapingbee")
+    if CRAWLBASE_KEY:   proxies.append("crawlbase")
+    if SCRAPEDO_KEY:    proxies.append("scrapedo")
+
     if not proxies:
         _proxy_stats["direto"] += 1
         return requests.get(url, headers=random_headers(), timeout=15)
-    proxy = proxies[_proxy_counter % len(proxies)]
+
+    # Check cache first
+    cached = cache_get(url)
+    if cached:
+        log.debug(f"Cache hit: {url[:60]}")
+        return cached
+
+    # Filter out proxies in cooldown
+    now = time.time()
+    proxies_ativos_now = [p for p in proxies if now > _proxy_cooldown.get(p, 0)]
+    if not proxies_ativos_now:
+        # All in cooldown — use the one with least cooldown time
+        proxies_ativos_now = sorted(proxies, key=lambda p: _proxy_cooldown.get(p, 0))[:1]
+
+    # Sort by success rate (prefer better proxies)
+    def taxa_sucesso(p):
+        total = _proxy_stats.get(p, 0)
+        if total < 3: return 0.5  # neutral for new proxies
+        return _proxy_success.get(p, 0) / total
+
+    proxies_ativos_now.sort(key=taxa_sucesso, reverse=True)
+    proxy = proxies_ativos_now[_proxy_counter % len(proxies_ativos_now)]
     _proxy_counter += 1
-    _proxy_stats[proxy] += 1
-    log.debug(f"Proxy: {proxy} ({_proxy_counter})")
+    log.debug(f"Proxy: {proxy} [{_proxy_counter}] render={render} taxa={taxa_sucesso(proxy):.0%}")
+
+    t0 = time.time()
     try:
         if proxy == "scraperapi":
             rp = "&render=true&wait=3000" if render else ""
             api = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={requests.utils.quote(url)}{rp}"
             return requests.get(api, timeout=60, headers=random_headers())
+
         elif proxy == "zenrows":
-            params = {"url":url,"apikey":ZENROWS_KEY,
-                      "js_render":"true" if render else "false","premium_proxy":"true"}
+            params = {
+                "url": url, "apikey": ZENROWS_KEY,
+                "js_render": "true" if render else "false",
+                "premium_proxy": "true",
+            }
             return requests.get("https://api.zenrows.com/v1/", params=params, timeout=60)
+
         elif proxy == "scrapingbee":
-            params = {"api_key":SCRAPINGBEE_KEY,"url":url,
-                      "render_js":"true" if render else "false","premium_proxy":"true"}
+            params = {
+                "api_key": SCRAPINGBEE_KEY, "url": url,
+                "render_js": "true" if render else "false",
+                "premium_proxy": "true",
+            }
             return requests.get("https://app.scrapingbee.com/api/v1/", params=params, timeout=60)
+
+        elif proxy == "crawlbase":
+            # Crawlbase — suporta JS com &ajax_wait=true
+            ajax = "&ajax_wait=true&page_wait=3000" if render else ""
+            api = f"https://api.crawlbase.com/?token={CRAWLBASE_KEY}&url={requests.utils.quote(url)}{ajax}"
+            return requests.get(api, timeout=60, headers=random_headers())
+
+        elif proxy == "scrapedo":
+            # Scrape.do — suporta JS com &render=true
+            rp = "&render=true" if render else ""
+            api = f"https://api.scrape.do?token={SCRAPEDO_KEY}&url={requests.utils.quote(url)}{rp}"
+            result = requests.get(api, timeout=60, headers=random_headers())
+
+        registar_proxy_resultado(proxy, True, int((time.time()-t0)*1000))
+        return result
     except Exception as e:
+        registar_proxy_resultado(proxy, False, int((time.time()-t0)*1000))
         log.warning(f"Proxy {proxy} falhou: {e} — a tentar direto")
-        return requests.get(url, headers=random_headers(), timeout=15)
+
+    # Fallback direto
+    _proxy_stats["direto"] = _proxy_stats.get("direto", 0) + 1
+    return requests.get(url, headers=random_headers(), timeout=15)
 
 def get_proxy_stats():
+    """Estatísticas de uso de cada proxy."""
     total = sum(_proxy_stats.values())
-    return {k:{"pedidos":v,"pct":round(v/total*100) if total else 0}
-            for k,v in _proxy_stats.items() if v>0}
+    return {k: {"pedidos": v, "pct": round(v/total*100) if total else 0}
+            for k, v in _proxy_stats.items() if v > 0}
+
+def proxies_disponiveis():
+    """Número de proxies configurados."""
+    return sum([bool(SCRAPERAPI_KEY), bool(ZENROWS_KEY), bool(SCRAPINGBEE_KEY),
+                bool(CRAWLBASE_KEY), bool(SCRAPEDO_KEY)])
 
 # ============================================================
 # BASE DE DADOS
@@ -423,18 +533,64 @@ def geocodificar(titulo, zona):
     _geocoding_cache[cache_key] = (None, None)
     return None, None
 
+# Palavras que aumentam o score
+PALAVRAS_POSITIVAS = {
+    "piscina": 8, "pool": 8, "vista mar": 10, "sea view": 10,
+    "garagem": 4, "garage": 4, "elevador": 3, "lift": 3,
+    "renovado": 5, "renovada": 5, "renovated": 5, "novo": 3, "nova": 3,
+    "jardim": 3, "garden": 3, "terraço": 3, "terrace": 3,
+    "ar condicionado": 2, "ac": 2, "solar": 2, "eficiência": 2,
+    "praia": 5, "beach": 5, "centro": 3, "center": 3,
+    "moradia": 2, "villa": 2, "quinta": 3,
+}
+
 def calcular_score(item, perfil):
     score = 0
-    preco = item.get("preco_valor"); area = item.get("area_m2")
-    zona  = item.get("zona","");    quartos = item.get("quartos")
+    preco   = item.get("preco_valor")
+    area    = item.get("area_m2")
+    zona    = item.get("zona","")
+    quartos = item.get("quartos")
+    desc    = (item.get("descricao") or "").lower()
+    titulo  = (item.get("titulo") or "").lower()
+    texto   = titulo + " " + desc
+
+    # Preço (0-30 pts)
     if preco and preco > 0:
-        score += max(0, min(40, int((1-(preco/perfil["preco_max"]))*40)))
+        score += max(0, min(30, int((1-(preco/perfil["preco_max"]))*30)))
+
+    # Preço/m² (0-20 pts)
     if preco and area and area > 0:
-        ratio = 1 - min(1,(preco/area-1000)/2000)
-        score += max(0, min(30, int(ratio*30)))
-    score += int((ZONA_SCORE.get(zona,5)/10)*20)
-    if quartos: score += min(10,(quartos-perfil["quartos_min"]+1)*3)
-    return min(100,score)
+        ratio = 1 - min(1, (preco/area - 800) / 2200)
+        score += max(0, min(20, int(ratio*20)))
+
+    # Zona (0-15 pts)
+    score += int((ZONA_SCORE.get(zona,5)/10)*15)
+
+    # Quartos (0-10 pts)
+    if quartos:
+        score += min(10, (quartos - perfil["quartos_min"] + 1) * 3)
+
+    # Características positivas (0-20 pts)
+    bonus = 0
+    for palavra, pts in PALAVRAS_POSITIVAS.items():
+        if palavra in texto:
+            bonus += pts
+    score += min(20, bonus)
+
+    # Baixa de preço recente (+5 pts)
+    if item.get("preco_antigo"):
+        score += 5
+
+    # Penalização por anúncio antigo (>30 dias)
+    criado = item.get("criado_em","")
+    if criado:
+        try:
+            from datetime import datetime
+            dias = (datetime.now() - datetime.fromisoformat(criado[:19])).days
+            if dias > 30: score -= min(10, dias // 30 * 2)
+        except: pass
+
+    return max(0, min(100, score))
 
 def imovel_existe(imovel_id):
     with get_db() as conn:
@@ -751,6 +907,23 @@ def extrair_referencia(titulo):
     m = re.search(r'(?:ref[:\s#.]+|t/)(\w{4,})', titulo, re.I)
     return m.group(1).upper() if m else None
 
+def similaridade_titulo(t1, t2):
+    """Calcula similaridade entre dois títulos (0-1)."""
+    if not t1 or not t2: return 0
+    t1, t2 = t1.lower().strip(), t2.lower().strip()
+    if t1 == t2: return 1.0
+    w1 = set(t1.split()); w2 = set(t2.split())
+    if not w1 or not w2: return 0
+    return len(w1 & w2) / max(len(w1), len(w2))
+
+def preco_similar(p1, p2, tol=0.03):
+    if not p1 or not p2: return False
+    return abs(p1 - p2) / max(p1, p2) < tol
+
+def area_similar(a1, a2, tol=0.05):
+    if not a1 or not a2: return False
+    return abs(a1 - a2) / max(a1, a2) < tol
+
 def gerar_chave_dedup(item):
     """
     Gera chave de deduplicação. Usa referência se disponível,
@@ -770,6 +943,7 @@ def gerar_chave_dedup(item):
     return hashlib.md5(f"{zona}|{preco}|{qts}|{area}".encode()).hexdigest()
 
 def deduplicar(items):
+    """Deduplicação melhorada: chave + similaridade de título + preço/área."""
     por_chave = {}; sem_chave = []
     for item in items:
         if not item.get("preco_valor"):
@@ -785,17 +959,40 @@ def deduplicar(items):
             por_chave[chave] = item
         else:
             ex = por_chave[chave]
-            if (len(item.get("titulo","")) > len(ex.get("titulo",""))
-                    or (item.get("imagem_url") and not ex.get("imagem_url"))):
+            # Merge fontes
+            fontes = ex.get("_fontes", [ex["fonte"]])
+            fontes.append(item["fonte"])
+            ex["_fontes"] = list(set(fontes))
+            ex["fonte"] = ", ".join(sorted(ex["_fontes"]))
+            # Manter o que tem mais info
+            if len(item.get("titulo","")) > len(ex.get("titulo","")):
+                item["_fontes"] = ex["_fontes"]
+                item["fonte"] = ex["fonte"]
                 por_chave[chave] = item
-            else:
-                fontes = ex.get("_fontes", [ex["fonte"]])
-                fontes.append(item["fonte"])
-                ex["_fontes"] = list(set(fontes))
-                ex["fonte"] = ", ".join(ex["_fontes"])
-    r = list(por_chave.values()) + sem_chave
-    log.info(f"  Dedup: {len(items)} → {len(r)} ({len(items)-len(r)} dup. removidos)")
-    return r
+            elif item.get("imagem_url") and not ex.get("imagem_url"):
+                ex["imagem_url"] = item["imagem_url"]
+
+    # Segunda passagem: dedup por similaridade de título + preço similar
+    lista = list(por_chave.values())
+    duplicados = set()
+    for i, a in enumerate(lista):
+        if i in duplicados: continue
+        for j, b in enumerate(lista[i+1:], i+1):
+            if j in duplicados: continue
+            if (a.get("zona") == b.get("zona")
+                    and preco_similar(a.get("preco_valor"), b.get("preco_valor"))
+                    and area_similar(a.get("area_m2"), b.get("area_m2"))
+                    and similaridade_titulo(a.get("titulo"), b.get("titulo")) > 0.6):
+                duplicados.add(j)
+                # Merge fontes
+                fontes = set(a.get("_fontes", [a["fonte"]]) + b.get("_fontes", [b["fonte"]]))
+                a["_fontes"] = list(fontes)
+                a["fonte"] = ", ".join(sorted(fontes))
+
+    resultado = [item for i, item in enumerate(lista) if i not in duplicados] + sem_chave
+    removidos = len(items) - len(resultado)
+    log.info(f"  Dedup: {len(items)} → {len(resultado)} ({removidos} duplicados removidos)")
+    return resultado
 
 # ============================================================
 # SELENIUM
@@ -876,14 +1073,36 @@ def quit_driver():
         _driver=None
 
 def selenium_get(url, wait_sel=None, wait_s=5):
-    d=get_driver()
+    """Usa Playwright se disponível, senão fallback para requests."""
+    if PLAYWRIGHT_AVAILABLE:
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(
+                    headless=True,
+                    args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu"]
+                )
+                ctx = browser.new_context(
+                    user_agent=random.choice(USER_AGENTS),
+                    viewport={"width":1920,"height":1080}
+                )
+                page = ctx.new_page()
+                page.goto(url, wait_until="networkidle", timeout=30000)
+                if wait_sel:
+                    try: page.wait_for_selector(wait_sel, timeout=wait_s*1000)
+                    except: pass
+                html = page.content()
+                browser.close()
+                return html
+        except Exception as e:
+            log.warning(f"Playwright: {e} — a usar requests")
+
+    # Fallback para proxied_get
     try:
-        d.get(url)
-        if wait_sel: WebDriverWait(d,wait_s).until(EC.presence_of_element_located((By.CSS_SELECTOR,wait_sel)))
-        else: time.sleep(wait_s)
-        return d.page_source
-    except TimeoutException: return d.page_source
-    except WebDriverException as e: log.warning(f"Selenium: {e}"); return ""
+        r = proxied_get(url, render=True)
+        return r.text
+    except Exception as e:
+        log.warning(f"selenium_get fallback: {e}")
+        return ""
 
 def com_retry(fn,n=3,w=5):
     for i in range(n):
@@ -988,7 +1207,7 @@ def paginar_scraperapi(url_tpl, parse_fn):
     for pag in range(1,MAX_PAGINAS+1):
         url=url_tpl.format(page=pag)
         def _fetch(u=url):
-            r=proxied_get(u, render=False)
+            r=proxied_get(u, render=True)
             return parse_fn(r.text)
         try:
             items=com_retry(_fetch)
@@ -1603,21 +1822,44 @@ def enviar_resumo_semanal():
 # LOOP PRINCIPAL
 # ============================================================
 
+def correr_scraper(args):
+    """Corre um scraper individual — usado em paralelo."""
+    nome, fn, perfil = args
+    log.info(f"  → {nome}...")
+    erros = ""; total = 0; pags = 1
+    try:
+        r = fn(perfil)
+        anuncios, pags = r if isinstance(r, tuple) else (r, 1)
+        anuncios = [a for a in anuncios if validar(a, perfil)]
+        total = len(anuncios)
+        if total == 0:
+            log.warning(f"    ⚠️ {nome}: 0 resultados")
+        else:
+            log.info(f"    ✅ {nome}: {total} resultados")
+    except Exception as e:
+        erros = str(e)
+        log.error(f"    ❌ {nome}: {e}")
+        anuncios = []
+    registar_log_scraper(nome, perfil["nome"], total, 0, pags, erros)
+    return anuncios
+
 def verificar_perfil(perfil):
-    log.info(f"▶ {perfil['nome']}")
-    todos_raw=[]; ids_ronda=[]
-    for nome, fn in SCRAPERS:
-        log.info(f"  → {nome}...")
-        erros=""; total=0; novos_s=0; pags=1
-        try:
-            r=fn(perfil)
-            anuncios,pags=r if isinstance(r,tuple) else (r,1)
-            anuncios=[a for a in anuncios if validar(a,perfil)]
-            total=len(anuncios); todos_raw.extend(anuncios)
-            if total==0: log.warning(f"    ⚠️ 0 resultados")
-        except Exception as e: erros=str(e); log.error(f"    {e}")
-        registar_log_scraper(nome,perfil["nome"],total,novos_s,pags,erros)
-        time.sleep(random.uniform(1,3))
+    log.info(f"▶ {perfil['nome']} — a correr {len(SCRAPERS)} scrapers em paralelo")
+    todos_raw = []
+
+    # Corre scrapers em paralelo com ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    args = [(nome, fn, perfil) for nome, fn in SCRAPERS]
+    
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {executor.submit(correr_scraper, a): a[0] for a in args}
+        for future in as_completed(futures):
+            nome = futures[future]
+            try:
+                resultado = future.result(timeout=120)
+                todos_raw.extend(resultado)
+            except Exception as e:
+                log.error(f"    {nome} thread error: {e}")
 
     # Enriquece novos itens com detalhes completos (amostra de 10 por ronda para não sobrecarregar)
     todos=deduplicar(todos_raw)
@@ -1689,7 +1931,7 @@ def verificar():
         log.info(f"ScraperAPI: {used}/{limit} créditos usados ({pct}%)")
 
         if pct >= 100:
-            if proxies_disponiveis <= 1:
+            if proxies_ativos <= 1:
                 # Só tem ScraperAPI e está esgotado — para
                 log.warning("⛔ ScraperAPI sem créditos e sem proxies alternativos! A saltar ronda.")
                 try:
@@ -2202,8 +2444,113 @@ def api_apagar_imovel():
         log.error(f"api_apagar_imovel: {e}")
         return jsonify({"erro": str(e)}), 500
 
+@app.route("/api/saude")
+@login_required
+def api_saude():
+    """Dashboard de saúde — estado de todos os scrapers."""
+    try:
+        with get_db() as conn:
+            with conn.cursor(row_factory=psycopg_rows.dict_row) as cur:
+                cur.execute("""
+                    SELECT fonte, perfil_nome,
+                        MAX(executado_em)::TEXT ultima_exec,
+                        SUM(total) total_imoveis,
+                        SUM(novos) total_novos,
+                        COUNT(*) total_rondas,
+                        COUNT(*) FILTER (WHERE erros != '' AND erros IS NOT NULL) rondas_com_erro,
+                        AVG(total) media_imoveis
+                    FROM scraper_logs
+                    WHERE executado_em > NOW() - INTERVAL '7 days'
+                    GROUP BY fonte, perfil_nome
+                    ORDER BY fonte
+                """)
+                scrapers = [dict(r) for r in cur.fetchall()]
+        # Add proxy stats
+        proxy_info = get_proxy_stats()
+        return jsonify({"scrapers": scrapers, "proxies": proxy_info})
+    except Exception as e:
+        return jsonify({"erro": str(e)}), 500
+
+@app.route("/api/search")
+@login_required
+def api_search():
+    """Pesquisa semântica simples por texto livre."""
+    q = request.args.get("q","").lower().strip()
+    if not q: return jsonify([])
+    try:
+        imoveis = get_imoveis(limite=500)
+        # Parse query
+        resultado = []
+        for im in imoveis:
+            texto = f"{im.get('titulo','')} {im.get('descricao','')} {im.get('zona','')}".lower()
+            # Check all words in query
+            palavras = q.split()
+            if all(p in texto for p in palavras):
+                resultado.append(im)
+        return jsonify(sorted(resultado, key=lambda x: -x.get("score",0))[:50])
+    except Exception as e:
+        return jsonify({"erro": str(e)}), 500
+
+@app.route("/api/new")
+@login_required
+def api_new():
+    """Imóveis das últimas 24h."""
+    try:
+        with get_db() as conn:
+            with conn.cursor(row_factory=psycopg_rows.dict_row) as cur:
+                cur.execute("""
+                    SELECT * FROM imoveis
+                    WHERE criado_em > NOW() - INTERVAL '24 hours'
+                    ORDER BY score DESC LIMIT 50
+                """)
+                rows = [dict(r) for r in cur.fetchall()]
+                for r in rows:
+                    for k in ["criado_em","atualizado_em"]:
+                        if r.get(k): r[k] = r[k].isoformat()
+                return jsonify(rows)
+    except Exception as e:
+        return jsonify({"erro": str(e)}), 500
+
+@app.route("/api/removed")
+@login_required
+def api_removed():
+    """Imóveis removidos recentemente."""
+    try:
+        with get_db() as conn:
+            with conn.cursor(row_factory=psycopg_rows.dict_row) as cur:
+                cur.execute("""
+                    SELECT * FROM imoveis
+                    WHERE disponivel=FALSE AND removido_em > NOW() - INTERVAL '7 days'
+                    ORDER BY removido_em DESC LIMIT 50
+                """)
+                rows = [dict(r) for r in cur.fetchall()]
+                for r in rows:
+                    for k in ["criado_em","removido_em"]:
+                        if r.get(k): r[k] = r[k].isoformat()
+                return jsonify(rows)
+    except Exception as e:
+        return jsonify({"erro": str(e)}), 500
+
+@app.route("/api/favorites")
+@login_required
+def api_favorites():
+    """Todos os favoritos."""
+    try:
+        with get_db() as conn:
+            with conn.cursor(row_factory=psycopg_rows.dict_row) as cur:
+                cur.execute("""
+                    SELECT * FROM imoveis WHERE favorito=TRUE ORDER BY score DESC
+                """)
+                rows = [dict(r) for r in cur.fetchall()]
+                for r in rows:
+                    for k in ["criado_em","atualizado_em"]:
+                        if r.get(k): r[k] = r[k].isoformat()
+                return jsonify(rows)
+    except Exception as e:
+        return jsonify({"erro": str(e)}), 500
+
 @app.route("/health")
-def health(): return jsonify({"status":"ok","ts":datetime.now().isoformat()})
+def health(): return jsonify({"status":"ok","ts":datetime.now().isoformat(),"proxies":proxies_disponiveis()})
 
 # ============================================================
 # ARRANQUE
