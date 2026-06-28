@@ -753,9 +753,38 @@ def fazer_item(link,titulo,preco,fonte,zona,img=None):
             "preco_valor":pv,"link":link,"fonte":fonte,"zona":zona,"imagem_url":img,
             "area_m2":extrair_area(titulo),"quartos":extrair_quartos(titulo)}
 
-def validar(item,perfil):
-    pv=item.get("preco_valor")
-    return not (pv and pv>perfil["preco_max"])
+# Palavras que indicam arrendamento — exclui estes imóveis
+PALAVRAS_ARRENDAMENTO = [
+    "arrendar","arrendamento","arrendado","aluguer","alugar","aluga-se",
+    "renda","rent","rental","arenda","para arrendar","por mês","€/mês",
+    "/mês","mensal","mes","month","monthly","trespasse","trespass",
+]
+
+def validar(item, perfil):
+    """Valida imóvel contra filtros do perfil e exclui arrendamentos."""
+    # Excluir arrendamentos
+    titulo = (item.get("titulo") or "").lower()
+    preco_str = (item.get("preco") or "").lower()
+    fonte_url = (item.get("link") or "").lower()
+
+    for palavra in PALAVRAS_ARRENDAMENTO:
+        if palavra in titulo or palavra in preco_str:
+            return False
+
+    # Excluir por URL (alguns sites usam /arrendar/ no URL)
+    if any(x in fonte_url for x in ["/arrendar/","/arrendamento/","/alugar/","/rent/"]):
+        return False
+
+    # Validar preço máximo
+    pv = item.get("preco_valor")
+    if pv and pv > perfil["preco_max"]:
+        return False
+
+    # Excluir preços mensais (arrendamento) — preços muito baixos para compra
+    if pv and pv < 20000:
+        return False
+
+    return True
 
 def paginar_requests(url_tpl, parse_fn):
     todos=[]; pag=1
