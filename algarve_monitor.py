@@ -43,10 +43,12 @@ log = logging.getLogger("algarve-monitor")
 EMAIL_REMETENTE    = os.getenv("EMAIL_REMETENTE",    "o_teu_email@gmail.com")
 EMAIL_PASSWORD     = os.getenv("EMAIL_PASSWORD",     "a_tua_app_password")
 EMAIL_DESTINATARIO = os.getenv("EMAIL_DESTINATARIO", EMAIL_REMETENTE)
-INTERVALO_HORAS    = int(os.getenv("INTERVALO_HORAS", "48"))
+INTERVALO_HORAS    = int(os.getenv("INTERVALO_HORAS", "24"))
 DATABASE_URL       = os.getenv("DATABASE_URL", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 SCRAPERAPI_KEY     = os.getenv("SCRAPERAPI_KEY", "")
+ZENROWS_KEY        = os.getenv("ZENROWS_KEY", "")
+SCRAPINGBEE_KEY    = os.getenv("SCRAPINGBEE_KEY", "")
 PORT               = int(os.getenv("PORT", "8080"))
 GOOGLE_MAPS_KEY    = os.getenv("GOOGLE_MAPS_KEY", "")    # opcional para geocoding
 VAPID_PUBLIC_KEY   = os.getenv("VAPID_PUBLIC_KEY", "")
@@ -105,11 +107,44 @@ def random_headers():
             "Accept-Language": "pt-PT,pt;q=0.9,en;q=0.8",
             "Accept": "text/html,application/xhtml+xml,*/*;q=0.8"}
 
-def proxied_get(url, **kwargs):
-    if SCRAPERAPI_KEY:
-        api = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={requests.utils.quote(url)}"
-        return requests.get(api, timeout=30, **kwargs)
-    return requests.get(url, headers=random_headers(), timeout=15, **kwargs)
+_proxy_counter = 0
+_proxy_stats = {"scraperapi":0,"zenrows":0,"scrapingbee":0,"direto":0}
+
+def proxied_get(url, render=False, **kwargs):
+    """Rotação automática entre ScraperAPI, ZenRows e ScrapingBee."""
+    global _proxy_counter
+    proxies = []
+    if SCRAPERAPI_KEY:  proxies.append("scraperapi")
+    if ZENROWS_KEY:     proxies.append("zenrows")
+    if SCRAPINGBEE_KEY: proxies.append("scrapingbee")
+    if not proxies:
+        _proxy_stats["direto"] += 1
+        return requests.get(url, headers=random_headers(), timeout=15)
+    proxy = proxies[_proxy_counter % len(proxies)]
+    _proxy_counter += 1
+    _proxy_stats[proxy] += 1
+    log.debug(f"Proxy: {proxy} ({_proxy_counter})")
+    try:
+        if proxy == "scraperapi":
+            rp = "&render=true&wait=3000" if render else ""
+            api = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={requests.utils.quote(url)}{rp}"
+            return requests.get(api, timeout=60, headers=random_headers())
+        elif proxy == "zenrows":
+            params = {"url":url,"apikey":ZENROWS_KEY,
+                      "js_render":"true" if render else "false","premium_proxy":"true"}
+            return requests.get("https://api.zenrows.com/v1/", params=params, timeout=60)
+        elif proxy == "scrapingbee":
+            params = {"api_key":SCRAPINGBEE_KEY,"url":url,
+                      "render_js":"true" if render else "false","premium_proxy":"true"}
+            return requests.get("https://app.scrapingbee.com/api/v1/", params=params, timeout=60)
+    except Exception as e:
+        log.warning(f"Proxy {proxy} falhou: {e} — a tentar direto")
+        return requests.get(url, headers=random_headers(), timeout=15)
+
+def get_proxy_stats():
+    total = sum(_proxy_stats.values())
+    return {k:{"pedidos":v,"pct":round(v/total*100) if total else 0}
+            for k,v in _proxy_stats.items() if v>0}
 
 # ============================================================
 # BASE DE DADOS
@@ -1133,11 +1168,7 @@ def _api_scrape(url_tpl, base, fonte, zona, extra_sels=None):
     for pag in range(1, MAX_PAGINAS+1):
         url = url_tpl.format(page=pag)
         def _fetch(u=url):
-            if SCRAPERAPI_KEY:
-                api = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={requests.utils.quote(u)}&render=true&wait=3000"
-                r = requests.get(api, timeout=60, headers=random_headers())
-            else:
-                r = requests.get(u, headers=random_headers(), timeout=15)
+            r = proxied_get(u, render=True)
             return parse(r.text)
         try:
             items = com_retry(_fetch)
@@ -1256,11 +1287,7 @@ def scrape_generico(nome, urls, perfil, seletores_extra=None):
     resultados = []
     for url in urls:
         def _fetch(u=url):
-            if SCRAPERAPI_KEY:
-                api = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={requests.utils.quote(u)}&render=true&wait=3000"
-                r = requests.get(api, timeout=60, headers=random_headers())
-            else:
-                r = requests.get(u, headers=random_headers(), timeout=15)
+            r = proxied_get(u, render=True)
             return _api_scrape_html(r.text, u, nome, seletores_extra)
         try:
             items = com_retry(_fetch, tentativas=2)
@@ -2096,7 +2123,11 @@ def api_teste_email():
         return jsonify({"erro":str(e)}),500
 
 def verificar_limite_scraperapi():
-    """Verifica uso do ScraperAPI e envia alerta se >80%."""
+    """Verifica uso de todos os proxies e envia alerta se algum >80%."""
+    # Log estatísticas de rotação
+    stats = get_proxy_stats()
+    if stats: log.info(f"Proxy stats: {stats}")
+    
     if not SCRAPERAPI_KEY: return
     try:
         r = requests.get(
@@ -2131,7 +2162,8 @@ def verificar_limite_scraperapi():
 @login_required
 def api_scraperapi_stats():
     stats = verificar_limite_scraperapi()
-    return jsonify(stats or {})
+    proxy_stats = get_proxy_stats()
+    return jsonify({"scraperapi": stats or {}, "rotacao": proxy_stats})
 
 @app.route("/api/historico_precos")
 @login_required
@@ -2197,11 +2229,11 @@ if __name__=="__main__":
     log.info(f"Dashboard em http://localhost:{PORT}")
     verificar()
     # Corre uma vez por dia às 08:00 — poupa pedidos ScraperAPI
-    schedule.every(48).hours.do(verificar)  # a cada 2 dias
+    schedule.every(24).hours.do(verificar)  # uma vez por dia
     schedule.every().monday.at("08:00").do(enviar_resumo_semanal)
     schedule.every().day.at("09:00").do(verificar_scrapers_com_falha)
     schedule.every().day.at("20:00").do(verificar_limite_scraperapi)
-    schedule.every(48).hours.do(geocodificar_existentes)
+    schedule.every(24).hours.do(geocodificar_existentes)
     log.info("A monitorizar. Ctrl+C para parar.\n")
     while True: schedule.run_pending(); time.sleep(60)
 "# v4.1" 
