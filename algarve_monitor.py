@@ -2554,6 +2554,61 @@ def api_favorites():
     except Exception as e:
         return jsonify({"erro": str(e)}), 500
 
+@app.route("/api/status_scraper")
+@login_required
+def api_status_scraper():
+    """Estado do scraper para a barra de estado do dashboard."""
+    try:
+        with get_db() as conn:
+            with conn.cursor(row_factory=psycopg_rows.dict_row) as cur:
+                # Última execução
+                cur.execute("""
+                    SELECT MAX(executado_em)::TEXT as ultima,
+                           COUNT(DISTINCT fonte) as total_fontes
+                    FROM scraper_logs
+                    WHERE executado_em > NOW() - INTERVAL '48 hours'
+                """)
+                row = cur.fetchone()
+                ultima = row["ultima"] if row else None
+                total = row["total_fontes"] or 0
+
+                # Scrapers OK vs falhas na última ronda
+                cur.execute("""
+                    SELECT fonte,
+                           MAX(executado_em)::TEXT ultima_exec,
+                           SUM(total) total_imoveis,
+                           MAX(erros) erro
+                    FROM scraper_logs
+                    WHERE executado_em > NOW() - INTERVAL '48 hours'
+                    GROUP BY fonte
+                """)
+                scrapers = cur.fetchall()
+                ok = [s for s in scrapers if (s["total_imoveis"]or 0)>0]
+                fail = [s for s in scrapers if (s["total_imoveis"]or 0)==0]
+
+        # Calcular próxima execução (24h após última)
+        proxima = None
+        if ultima:
+            from datetime import datetime, timedelta
+            try:
+                dt_ultima = datetime.fromisoformat(ultima[:19])
+                dt_proxima = dt_ultima + timedelta(hours=24)
+                proxima = dt_proxima.isoformat()
+            except: pass
+
+        return jsonify({
+            "ultima_execucao": ultima,
+            "proxima_execucao": proxima,
+            "total_scrapers": total,
+            "scrapers_ok": len(ok),
+            "scrapers_fail": len(fail),
+            "proxies_ativos": proxies_disponiveis(),
+            "falhas": [{"fonte":s["fonte"],"erro":s["erro"],"ultima_exec":s["ultima_exec"]}
+                       for s in fail]
+        })
+    except Exception as e:
+        return jsonify({"erro": str(e)}), 500
+
 @app.route("/health")
 def health(): return jsonify({"status":"ok","ts":datetime.now().isoformat(),"proxies":proxies_disponiveis()})
 

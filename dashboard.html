@@ -199,6 +199,42 @@
   </div>
 </div>
 
+<!-- BARRA DE ESTADO DO SCRAPER -->
+<div id="status-bar" style="background:#1a2f47;color:white;padding:8px 24px;font-size:12px;
+     display:flex;align-items:center;gap:20px;flex-wrap:wrap;border-bottom:1px solid #0f2942">
+  <div style="display:flex;align-items:center;gap:6px">
+    <span style="opacity:.6">🕐 Última pesquisa:</span>
+    <span id="sb-ultima" style="font-weight:600">A carregar...</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:6px">
+    <span style="opacity:.6">⏭ Próxima:</span>
+    <span id="sb-proxima" style="font-weight:600">—</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:6px">
+    <span style="opacity:.6">✅ Funcionaram:</span>
+    <span id="sb-ok" style="font-weight:600;color:#2ecc8a">—</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:6px">
+    <span style="opacity:.6">❌ Falharam:</span>
+    <span id="sb-fail" style="color:#f87171;cursor:pointer;font-weight:600" onclick="mostrarFalhas()">—</span>
+  </div>
+  <div style="margin-left:auto;display:flex;align-items:center;gap:6px">
+    <span style="opacity:.6">📡 Proxies:</span>
+    <span id="sb-proxies" style="font-weight:600">—</span>
+  </div>
+</div>
+
+<!-- MODAL FALHAS -->
+<div class="modal-bg" id="modal-falhas">
+  <div class="modal" style="max-width:500px">
+    <div class="modal-header">
+      <h2>❌ Scrapers com Falhas</h2>
+      <button class="btn-close" onclick="fecharModal('modal-falhas')">✕</button>
+    </div>
+    <div id="modal-falhas-body"></div>
+  </div>
+</div>
+
 <div class="tabs">
   <div class="tab active" onclick="showTab('imoveis')">🏠 Imóveis</div>
   <div class="tab" onclick="showTab('mapa')">🗺️ Mapa</div>
@@ -1000,6 +1036,76 @@ filtrar = function(){
     grid.innerHTML=lista.map(renderCard).join('');
   }
 };
+
+// ── BARRA DE ESTADO ──────────────────────────────────────
+let _scraper_status = null;
+
+async function carregarStatusBar(){
+  try {
+    const d = await fetch('/api/status_scraper').then(r=>r.json());
+    _scraper_status = d;
+
+    // Última execução
+    const ultima = d.ultima_execucao;
+    if(ultima){
+      const dt = new Date(ultima);
+      const agora = new Date();
+      const mins = Math.round((agora-dt)/60000);
+      const label = mins<60 ? `há ${mins} min` : mins<1440 ? `há ${Math.round(mins/60)}h` : dt.toLocaleDateString('pt-PT');
+      document.getElementById('sb-ultima').textContent = dt.toLocaleString('pt-PT',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}) + ` (${label})`;
+    } else {
+      document.getElementById('sb-ultima').textContent = 'Nunca';
+    }
+
+    // Próxima execução
+    const proxima = d.proxima_execucao;
+    if(proxima){
+      const dt = new Date(proxima);
+      const agora = new Date();
+      const mins = Math.round((dt-agora)/60000);
+      const label = mins>0 ? (mins<60?`em ${mins} min`:`em ${Math.round(mins/60)}h`) : 'Em breve';
+      document.getElementById('sb-proxima').textContent = dt.toLocaleTimeString('pt-PT',{hour:'2-digit',minute:'2-digit'}) + ` (${label})`;
+    }
+
+    // Sites OK vs falhas
+    document.getElementById('sb-ok').textContent = `${d.scrapers_ok||0}/${d.total_scrapers||0}`;
+    const falhas = d.scrapers_fail||0;
+    document.getElementById('sb-fail').textContent = falhas > 0 ? `${falhas} sites` : '0 ✓';
+    document.getElementById('sb-fail').style.color = falhas>0 ? '#f87171' : '#2ecc8a';
+    document.getElementById('sb-fail').style.cursor = falhas>0 ? 'pointer' : 'default';
+
+    // Proxies
+    const proxies = d.proxies_ativos||0;
+    document.getElementById('sb-proxies').textContent = `${proxies} ativos`;
+
+  } catch(e) {
+    document.getElementById('sb-ultima').textContent = 'Erro ao carregar';
+  }
+}
+
+function mostrarFalhas(){
+  if(!_scraper_status || !_scraper_status.falhas?.length) return;
+  const falhas = _scraper_status.falhas;
+  document.getElementById('modal-falhas-body').innerHTML = `
+    <p style="color:var(--g400);font-size:13px;margin-bottom:14px">
+      ${falhas.length} site(s) falharam na última ronda:
+    </p>
+    ${falhas.map(f=>`
+      <div style="padding:10px;background:var(--g50);border-radius:8px;margin-bottom:8px;
+                  border-left:3px solid #dc2626">
+        <div style="font-weight:600;font-size:13px">❌ ${f.fonte}</div>
+        <div style="font-size:12px;color:var(--g400);margin-top:3px">${f.erro||'Sem resultados'}</div>
+        <div style="font-size:11px;color:var(--g400);margin-top:2px">${(f.ultima_exec||'').slice(0,16)}</div>
+      </div>`).join('')}
+    <p style="font-size:12px;color:var(--g400);margin-top:10px">
+      💡 Estes sites podem estar bloqueados ou com URLs desatualizados.
+      Corre <code>python3 /app/validar.py</code> na Consola do Railway para diagnóstico completo.
+    </p>`;
+  document.getElementById('modal-falhas').classList.add('open');
+}
+
+carregarStatusBar();
+setInterval(carregarStatusBar, 60000);
 
 carregar();
 setInterval(carregar, 60000);
