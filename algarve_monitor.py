@@ -1174,7 +1174,9 @@ def selenium_get(url, wait_sel=None, wait_s=5):
             with sync_playwright() as p:
                 browser = p.chromium.launch(
                     headless=True,
-                    args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu"]
+                    executable_path="/usr/bin/chromium",
+                    args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu",
+                          "--disable-blink-features=AutomationControlled"]
                 )
                 ctx = browser.new_context(
                     user_agent=random.choice(USER_AGENTS),

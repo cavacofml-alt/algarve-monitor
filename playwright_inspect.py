@@ -37,28 +37,17 @@ def captura_xhr(nome, url, wait_ms=8000):
     }
 
     with sync_playwright() as p:
-        # Tenta playwright chromium primeiro, depois system chromium
-        import subprocess, os
-        launch_args = ["--no-sandbox","--disable-dev-shm-usage","--disable-gpu",
-                       "--disable-blink-features=AutomationControlled"]
-        try:
-            browser = p.chromium.launch(headless=True, args=launch_args)
-        except Exception:
-            # Instala o chromium do playwright se não estiver disponível
-            subprocess.run(["playwright", "install", "chromium", "--with-deps"],
-                           capture_output=True)
-            try:
-                browser = p.chromium.launch(headless=True, args=launch_args)
-            except Exception:
-                # Usa system chromium como último recurso
-                chromium_path = "/usr/bin/chromium"
-                if not os.path.exists(chromium_path):
-                    chromium_path = "/usr/bin/chromium-browser"
-                browser = p.chromium.launch(
-                    headless=True,
-                    executable_path=chromium_path,
-                    args=launch_args
-                )
+        # Usa system chromium (/usr/bin/chromium) — confirmado a funcionar
+        launch_args = [
+            "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+            "--disable-blink-features=AutomationControlled",
+            "--window-size=1920,1080",
+        ]
+        browser = p.chromium.launch(
+            headless=True,
+            executable_path="/usr/bin/chromium",
+            args=launch_args
+        )
         ctx = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport={"width":1920,"height":1080},
