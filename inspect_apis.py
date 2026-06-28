@@ -7,6 +7,8 @@ Diagnóstico detalhado antes de tentar scraping.
 Corre na Consola do Railway: python3 /app/inspect_apis.py
 """
 import os, requests, re, json, time
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 
@@ -29,6 +31,7 @@ def fetch_diagnostic(url, timeout=15, allow_redirects=True):
     }
     try:
         r = requests.get(url, timeout=timeout, allow_redirects=allow_redirects,
+            verify=False,  # ignora erros TLS/SSL
             headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
                      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                      "Accept-Language": "pt-PT,pt;q=0.9,en;q=0.8"})
@@ -227,11 +230,20 @@ def inspect_site(nome, base_url, test_url=None):
         report["blocked_reason"] = d["blocked_reason"] or f"HTTP {d['status']}"
         return report
 
-    # 4. Framework
+    # 4. Score base por HTML direto
+    report["score"] += 20  # homepage responde
+    if d["size"] > 50000:
+        report["score"] += 20
+        print(f"  HTML grande: ✅ {d['size']:,} chars (scraping direto possível)")
+    elif d["size"] > 5000:
+        report["score"] += 10
+
+    # Framework
     fw = detect_framework(html)
     if fw:
         print(f"  Framework: {fw}")
         report["framework"] = fw
+        if fw in ["Next.js","Nuxt.js"]: report["score"] += 10  # SSR likely
 
     # 5. JSON-LD
     jsonld = extract_jsonld(html)
@@ -248,24 +260,34 @@ def inspect_site(nome, base_url, test_url=None):
         report["score"] += 15
     if js_files:
         print(f"  Bundles JS: {len(js_files)} — a analisar...")
+        report["score"] += 10  # tem bundles JS
+        bundle_findings = []
         for jsf in js_files[:3]:
             bundle = analyze_js_bundle(jsf)
+            if not bundle: continue
             if bundle.get("apis"):
                 print(f"    📦 APIs: {list(bundle['apis'])[:2]}")
                 report["apis"].extend(list(bundle["apis"])[:2])
                 report["score"] += 20
+                bundle_findings.append(f"APIs: {list(bundle['apis'])[:1]}")
             if bundle.get("graphql"):
                 print(f"    GraphQL: ✅")
                 report["graphql"] = True; report["score"] += 15
+                bundle_findings.append("GraphQL")
             if bundle.get("algolia"):
                 print(f"    🎯 ALGOLIA: index={bundle.get('algolia_index','?')} app={bundle.get('algolia_app_id','?')}")
                 report["algolia"] = bundle; report["score"] += 30
+                bundle_findings.append(f"Algolia:{bundle.get('algolia_index','?')}")
             if bundle.get("firebase"):
                 print(f"    Firebase: ✅")
                 report["firebase"] = True; report["score"] += 15
+                bundle_findings.append("Firebase")
             if bundle.get("wp_plugins"):
                 print(f"    WP plugins: {bundle['wp_plugins']}")
+                bundle_findings.append(f"WP:{bundle['wp_plugins']}")
             time.sleep(0.5)
+        if not bundle_findings:
+            print(f"    (sem APIs encontradas nos bundles — usar Playwright para XHR capture)")
 
     # 7. Sitemaps
     sitemaps = check_sitemaps(d["final_url"].rstrip("/").rsplit("/",1)[0] if "/" in d["final_url"][8:] else d["final_url"])
