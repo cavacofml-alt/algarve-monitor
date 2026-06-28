@@ -60,6 +60,9 @@
     .card-img{width:100%;height:165px;object-fit:cover;display:block}
     .no-img{width:100%;height:100px;background:linear-gradient(135deg,#e8f4f8,#c8dfe8);
             display:flex;align-items:center;justify-content:center;font-size:32px}
+    .no-img-pro{width:100%;height:165px;background:linear-gradient(135deg,#f8fafc,#e2e8f0);
+                display:flex;flex-direction:column;align-items:center;justify-content:center;
+                cursor:pointer}
     .card-score{position:absolute;top:8px;right:8px;background:rgba(15,41,66,.8);
                 backdrop-filter:blur(4px);color:#fbbf24;font-size:10px;font-weight:700;
                 padding:3px 7px;border-radius:12px}
@@ -87,10 +90,10 @@
                   display:flex;gap:5px}
     .card-actions select{flex:1;padding:4px 7px;border:1px solid var(--g200);border-radius:5px;
                           font-size:11px;font-family:'Inter',sans-serif}
-    .btn-nota{padding:4px 8px;background:var(--navy);color:white;border:none;
-              border-radius:5px;font-size:11px;cursor:pointer}
-    .btn-detail{padding:4px 8px;background:var(--ocean);color:white;border:none;
-                border-radius:5px;font-size:11px;cursor:pointer}
+    .btn-nota{padding:6px 10px;background:var(--navy);color:white;border:none;
+              border-radius:6px;font-size:13px;cursor:pointer}
+    .btn-detail{padding:6px 10px;background:var(--ocean);color:white;border:none;
+                border-radius:6px;font-size:13px;cursor:pointer}
     .card-nota{width:100%;margin-top:5px;padding:5px 7px;border:1px solid var(--g200);
                border-radius:5px;font-size:11px;font-family:'Inter',sans-serif;resize:none}
     .empty{text-align:center;padding:50px;color:var(--g400);grid-column:1/-1}
@@ -201,6 +204,7 @@
   <div class="tab" onclick="showTab('mapa')">🗺️ Mapa</div>
   <div class="tab" onclick="showTab('mercado')">📊 Mercado</div>
   <div class="tab" onclick="showTab('visitas')">📅 Visitas</div>
+  <div class="tab" onclick="showTab('radar')">🔥 Oportunidades</div>
   <div class="tab" onclick="showTab('saude')">🩺 Saúde</div>
   <div class="tab" onclick="showTab('config')">⚙️ Configuração</div>
 </div>
@@ -262,6 +266,15 @@
   <div class="chart-grid" id="charts">
     <div class="empty" style="grid-column:1/-1">A carregar dados de mercado...</div>
   </div>
+</div>
+
+<!-- RADAR DE OPORTUNIDADES -->
+<div id="tab-radar" class="page" style="display:none">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+    <h2 style="font-size:18px;color:var(--navy)">🔥 Radar de Oportunidades</h2>
+    <div style="font-size:13px;color:var(--g400)">Score >80 · Preço abaixo do mercado · Recentes</div>
+  </div>
+  <div class="grid" id="radar-grid"><div class="empty">A carregar...</div></div>
 </div>
 
 <!-- SAÚDE DO SISTEMA -->
@@ -372,13 +385,14 @@ let todos=[], comparar_ids=[], mapaIniciado=false, chartsRendered=false;
 // ── TABS ──────────────────────────────────────────────────
 function showTab(name){
   document.querySelectorAll('.tab').forEach((t,i)=>{
-    t.classList.toggle('active',['imoveis','mapa','mercado','visitas','saude','config'][i]===name);
+    t.classList.toggle('active',['imoveis','mapa','mercado','visitas','radar','saude','config'][i]===name);
   });
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById('tab-'+name).classList.add('active');
   if(name==='mapa' && !mapaIniciado) iniciarMapa();
   if(name==='mercado' && !chartsRendered) carregarMercado();
   if(name==='visitas') carregarVisitas();
+  if(name==='radar') carregarRadar();
   if(name==='saude') carregarSaude();
   if(name==='config') carregarConfig();
 }
@@ -442,7 +456,8 @@ function filtrar(){
 
 // ── CARD ──────────────────────────────────────────────────
 function renderCard(im){
-  const img=im.imagem_url?`<img class="card-img" src="${im.imagem_url}" loading="lazy" alt="">`:'<div class="no-img">🏠</div>';
+  const img=im.imagem_url?`<img class="card-img" src="${im.imagem_url}" loading="lazy" alt="" onerror="this.parentElement.innerHTML='<div class=\"no-img-pro\"><div>🏡</div><div style=\"font-size:11px;color:#9ca3af;margin-top:6px\">Sem fotografia</div><div style=\"font-size:10px;color:#d1d5db;margin-top:2px\">Clique para ver anúncio</div></div>'">`
+    :`<a href="${im.link}" target="_blank" style="text-decoration:none"><div class="no-img-pro"><div style="font-size:40px">🏡</div><div style="font-size:11px;color:#9ca3af;margin-top:6px">Sem fotografia</div><div style="font-size:10px;color:#d1d5db;margin-top:2px">Clique para ver anúncio</div></div></a>`;
   const sel=comparar_ids.includes(im.id);
   let badges='';
   if(!im.disponivel) badges+='<span class="badge b-rem">Removido</span>';
@@ -464,17 +479,31 @@ function renderCard(im){
   const dt=new Date(im.criado_em).toLocaleDateString('pt-PT',{day:'2-digit',month:'short'});
   const eopts=['novo','visitar','visitado','rejeitado'];
   const elbl=['📋 Estado','👁 Para visitar','✅ Visitado','❌ Rejeitado'];
-  return `<div class="card${sel?' selected-compare':''}" id="c-${btoa(im.id).slice(0,12)}">
+  const borderCor = im.favorito?'#f5a623':!im.disponivel?'#9ca3af':im.estado==='visitado'?'#6b7280':im.preco_antigo?'#3b82f6':'#2ecc8a';
+  return `<div class="card${sel?' selected-compare':''}" id="c-${btoa(im.id).slice(0,12)}" style="border-top:3px solid ${borderCor}">
     <a href="${im.link}" target="_blank">${img}</a>
-    <div class="card-score">⭐${im.score||0}</div>
+    <div style="position:absolute;top:8px;right:8px;background:${scoreCor};color:white;
+      font-size:11px;font-weight:700;padding:3px 8px;border-radius:12px;text-align:center;min-width:60px">
+      ${scoreEmoji} ${sc} <span style="font-size:9px;opacity:.85">${scoreLabel}</span>
+    </div>
     <button class="card-fav" onclick="toggleFav('${im.id}',this)">${im.favorito?'⭐':'☆'}</button>
     <button class="card-compare" onclick="toggleComparar('${im.id}',this)" title="Comparar">${sel?'✓':'+'}</button>
     <div class="card-body">
       <div class="badges">${badges}</div>
       <div class="card-title"><a href="${im.link}" target="_blank">${im.titulo||'Sem título'}</a></div>
-      <div class="card-preco">${pAnt}<span class="preco-v">${im.preco||'N/D'}</span></div>
+      <div class="card-preco">${pAnt}<span class="preco-v">${im.preco||'N/D'}</span>
+        ${im.preco_antigo&&im.preco_valor&&extrairNumero(im.preco_antigo)?`
+        <span style="font-size:10px;background:#dbeafe;color:#1e40af;padding:2px 6px;border-radius:10px;margin-left:4px">
+          ⬇ -${Math.round((1-im.preco_valor/extrairNumero(im.preco_antigo))*100)}%
+        </span>`:''}</div>
       ${extras.length?`<div class="card-extras">${extras.map(e=>`<span class="extra">${e}</span>`).join('')}</div>`:''}
       <div class="card-meta">📍${im.zona||''} · 🏢${im.fonte||''} · ${dt}</div>
+      ${im.preco_m2 ? `<div style="font-size:10px;margin-top:3px;color:var(--g400)">
+        ${im.preco_m2<2000?'🎯 Excelente €/m²':im.preco_m2<3000?'✅ Bom €/m²':'⚠️ Caro €/m²'}
+        ${im.descricao&&im.descricao.toLowerCase().includes('piscin')?'· 🏊 Piscina':''}
+        ${im.descricao&&im.descricao.toLowerCase().includes('garag')?'· 🚗 Garagem':''}
+        ${im.descricao&&im.descricao.toLowerCase().includes('vista mar')||im.descricao&&im.descricao.toLowerCase().includes('sea view')?'· 🌊 Vista Mar':''}
+      </div>` : ''}
       <div class="card-actions">
         <select onchange="setEstado('${im.id}',this.value)">
           ${eopts.map((v,i)=>`<option value="${v}"${im.estado===v?' selected':''}>${elbl[i]}</option>`).join('')}
@@ -699,10 +728,28 @@ async function carregarMercado(){
   const d=await fetch('/api/mercado').then(r=>r.json());
   Chart.defaults.font.family="'Inter',sans-serif"; Chart.defaults.color='#6b7280';
   document.getElementById('charts').innerHTML=`
+    <div id="market-cards" style="grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:4px"></div>
     <div class="chart-card"><div class="chart-title"><span>💰</span>Preço médio por zona</div><canvas id="ch1"></canvas></div>
     <div class="chart-card"><div class="chart-title"><span>📊</span>Distribuição de preços</div><canvas id="ch2"></canvas></div>
     <div class="chart-card wide"><div class="chart-title"><span>📈</span>Evolução 90 dias</div><canvas id="ch3" height="120"></canvas></div>
   `;
+  // Market cards
+  if(d.por_zona?.length){
+    const mc = document.getElementById('market-cards');
+    if(mc) mc.innerHTML = d.por_zona.map(z=>{
+      const prev = d.evolucao?.filter(e=>e.zona===z.zona).slice(-2);
+      const tendencia = prev&&prev.length>=2 ? (prev[1].preco_medio>prev[0].preco_medio?'↑':'↓') : '→';
+      const corTend = tendencia==='↑'?'#dc2626':tendencia==='↓'?'#16a34a':'#9ca3af';
+      return `<div style="background:white;border-radius:10px;padding:16px;box-shadow:var(--s)">
+        <div style="font-size:14px;font-weight:700;color:var(--navy)">📍 ${z.zona}</div>
+        <div style="font-size:22px;font-weight:700;color:var(--ocean);margin:6px 0">${((z.preco_medio||0)/1000).toFixed(0)}k€</div>
+        <div style="font-size:11px;color:var(--g400)">${(z.preco_m2_medio||0).toLocaleString()}€/m²</div>
+        <div style="font-size:12px;font-weight:700;color:${corTend};margin-top:4px">${tendencia} ${tendencia==='↑'?'A subir':tendencia==='↓'?'A descer':'Estável'}</div>
+        <div style="font-size:11px;color:var(--g400)">${z.total} imóveis</div>
+      </div>`;
+    }).join('');
+  }
+
   if(d.por_zona?.length){
     new Chart(document.getElementById('ch1'),{type:'bar',data:{
       labels:d.por_zona.map(z=>z.zona),
@@ -773,6 +820,12 @@ document.querySelectorAll('.modal-bg').forEach(m=>m.addEventListener('click',e=>
 document.addEventListener('keydown',e=>{ if(e.key==='Escape') document.querySelectorAll('.modal-bg.open').forEach(m=>m.classList.remove('open')); });
 
 // ── INIT ──────────────────────────────────────────────────
+function extrairNumero(s){
+  if(!s) return 0;
+  const n=parseInt((s||'').replace(/[^\d]/g,''));
+  return isNaN(n)?0:n;
+}
+
 async function apagarImovel(id, btn){
   if(!confirm('Apagar este imóvel permanentemente do dashboard?')) return;
   btn.textContent='⏳'; btn.disabled=true;
@@ -1076,22 +1129,83 @@ function renderSocialGrid(){
     </div>`).join('');
 }
 
+// ── RADAR DE OPORTUNIDADES ───────────────────────────────
+async function carregarRadar(){
+  const imoveis = todos.filter(i=>
+    i.disponivel && i.score>=70 &&
+    (i.preco_antigo || (i.preco_m2 && i.preco_m2 < 2500))
+  ).sort((a,b)=>(b.score||0)-(a.score||0)).slice(0,20);
+
+  const grid = document.getElementById('radar-grid');
+  if(!imoveis.length){
+    grid.innerHTML='<div class="empty">Nenhuma oportunidade encontrada ainda.<br>Aguarda a próxima ronda do scraper.</div>';
+    return;
+  }
+  grid.innerHTML = imoveis.map(im=>{
+    const sc=im.score||0;
+    const scoreCor=sc>=80?'#16a34a':sc>=60?'#d97706':'#ea580c';
+    const scoreLabel=sc>=80?'Excelente':sc>=60?'Boa compra':'Razoável';
+    const scoreEmoji=sc>=80?'🟢':sc>=60?'🟡':'🟠';
+    const pAnt=im.preco_antigo?`<span class="preco-a">${im.preco_antigo}</span>`:'';
+    const extras=[];
+    if(im.area_m2)  extras.push(`📐${im.area_m2}m²`);
+    if(im.quartos)  extras.push(`🛏T${im.quartos}`);
+    if(im.preco_m2) extras.push(`💶${(im.preco_m2||0).toLocaleString()}€/m²`);
+    const dt=new Date(im.criado_em).toLocaleDateString('pt-PT',{day:'2-digit',month:'short'});
+    const dropPct = im.preco_antigo&&im.preco_valor&&extrairNumero(im.preco_antigo)
+      ? Math.round((1-im.preco_valor/extrairNumero(im.preco_antigo))*100) : 0;
+    return `<div class="card" style="border-top:3px solid ${scoreCor}">
+      ${im.imagem_url?`<img class="card-img" src="${im.imagem_url}" loading="lazy" alt="">`
+        :`<div class="no-img-pro"><div style="font-size:36px">🏡</div></div>`}
+      <div style="position:absolute;top:8px;right:8px;background:${scoreCor};color:white;
+        font-size:11px;font-weight:700;padding:3px 8px;border-radius:12px">
+        ${scoreEmoji} ${sc} ${scoreLabel}
+      </div>
+      ${dropPct>0?`<div style="position:absolute;top:8px;left:8px;background:#1e40af;color:white;
+        font-size:11px;font-weight:700;padding:3px 8px;border-radius:12px">⬇ -${dropPct}%</div>`:''}
+      <div class="card-body">
+        <div class="card-title"><a href="${im.link}" target="_blank">${im.titulo||'Sem título'}</a></div>
+        <div class="card-preco">${pAnt}<span class="preco-v">${im.preco||'N/D'}</span></div>
+        ${extras.length?`<div class="card-extras">${extras.map(e=>`<span class="extra">${e}</span>`).join('')}</div>`:''}
+        <div class="card-meta">📍${im.zona||''} · ${dt}</div>
+        <div style="margin-top:8px;display:flex;gap:6px">
+          <button onclick="toggleFav('${im.id}',this)" style="flex:1;padding:6px;border:1px solid var(--g200);border-radius:6px;cursor:pointer;font-size:13px">${im.favorito?'⭐':'☆'}</button>
+          <button onclick="abrirDetalhe('${im.id}')" class="btn-detail" style="flex:2">🔍 Detalhes</button>
+          <a href="${im.link}" target="_blank" style="flex:1;padding:6px;background:var(--lime);color:var(--navy);border-radius:6px;text-align:center;text-decoration:none;font-size:13px;font-weight:600">↗️</a>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
 // ── SAÚDE DO SISTEMA ─────────────────────────────────────
 async function carregarSaude(){
   const d = await fetch('/api/saude').then(r=>r.json());
 
   // Proxy stats
   const proxies = d.proxies || {};
+  // Fetch credit info from APIs if possible
   const proxyEl = document.getElementById('proxy-stats');
+  const proxyNames = {
+    scraperapi:'ScraperAPI', zenrows:'ZenRows', scrapingbee:'ScrapingBee',
+    crawlbase:'Crawlbase', scrapedo:'Scrape.do', direto:'Direto'
+  };
   if(Object.keys(proxies).length){
-    proxyEl.innerHTML = Object.entries(proxies).map(([nome,s])=>`
-      <div style="background:var(--g50);border-radius:8px;padding:12px;text-align:center">
-        <div style="font-size:18px;font-weight:700;color:var(--navy)">${s.pedidos}</div>
-        <div style="font-size:11px;color:var(--g400);margin:2px 0">${nome}</div>
-        <div style="font-size:12px;font-weight:600;color:${s.pct>50?'var(--lime)':'var(--amber)'}">${s.pct}%</div>
-      </div>`).join('');
+    proxyEl.innerHTML = Object.entries(proxies).map(([nome,s])=>{
+      const cor = s.pct>80?'#dc2626':s.pct>50?'#d97706':'#16a34a';
+      const label = proxyNames[nome]||nome;
+      return `<div style="background:white;border-radius:8px;padding:14px;text-align:center;
+                           box-shadow:var(--s);border-top:3px solid ${cor}">
+        <div style="font-size:22px;font-weight:700;color:var(--navy)">${s.pedidos}</div>
+        <div style="font-size:12px;font-weight:600;color:var(--g600);margin:3px 0">${label}</div>
+        <div style="font-size:11px;color:${cor};font-weight:600">${s.pct}% dos pedidos</div>
+        <div style="width:100%;height:4px;background:var(--g200);border-radius:2px;margin-top:8px">
+          <div style="width:${s.pct}%;height:4px;background:${cor};border-radius:2px"></div>
+        </div>
+      </div>`;
+    }).join('');
   } else {
-    proxyEl.innerHTML = '<div style="color:var(--g400);font-size:13px">Nenhuma ronda executada ainda.</div>';
+    proxyEl.innerHTML = '<div style="color:var(--g400);font-size:13px;padding:20px">Nenhuma ronda executada ainda. O scraper corre às 08:00.</div>';
   }
 
   // Scraper health
@@ -1101,31 +1215,27 @@ async function carregarSaude(){
     el.innerHTML='<div class="empty">Nenhum dado ainda. Aguarda a próxima ronda.</div>'; return;
   }
   el.innerHTML = `
-    <table style="width:100%;border-collapse:collapse;font-size:12px">
-      <thead>
-        <tr style="background:var(--navy);color:white">
-          <th style="padding:8px;text-align:left">Scraper</th>
-          <th style="padding:8px;text-align:center">Imóveis</th>
-          <th style="padding:8px;text-align:center">Rondas</th>
-          <th style="padding:8px;text-align:center">Erros</th>
-          <th style="padding:8px;text-align:left">Última execução</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${scrapers.map(s=>{
-          const taxaErro = s.rondas_com_erro/Math.max(s.total_rondas,1);
-          const cor = taxaErro>0.5?'#fee2e2':taxaErro>0.2?'#fef3c7':'#f0fdf4';
-          const icone = s.total_imoveis>0?'✅':taxaErro>0.5?'❌':'⚠️';
-          return `<tr style="background:${cor};border-bottom:1px solid var(--g200)">
-            <td style="padding:7px 8px;font-weight:500">${icone} ${s.fonte}</td>
-            <td style="padding:7px 8px;text-align:center">${s.total_imoveis||0}</td>
-            <td style="padding:7px 8px;text-align:center">${s.total_rondas}</td>
-            <td style="padding:7px 8px;text-align:center;color:${s.rondas_com_erro>0?'#dc2626':'#16a34a'}">${s.rondas_com_erro}</td>
-            <td style="padding:7px 8px;color:var(--g400)">${(s.ultima_exec||'').slice(0,16)}</td>
-          </tr>`;
-        }).join('')}
-      </tbody>
-    </table>`;
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px">
+      ${scrapers.map(s=>{
+        const taxaErro = s.rondas_com_erro/Math.max(s.total_rondas,1);
+        const ok = s.total_imoveis>0 && taxaErro<0.5;
+        const cor = ok?'#16a34a':taxaErro>0.5?'#dc2626':'#d97706';
+        const icone = ok?'🟢':taxaErro>0.5?'🔴':'🟡';
+        const estado = ok?'Online':taxaErro>0.5?'Bloqueado':'Instável';
+        return \`<div style="background:white;border-radius:8px;padding:12px;box-shadow:var(--s);
+                             border-left:3px solid \${cor}">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:13px;font-weight:600;color:var(--navy)">\${s.fonte}</span>
+            <span style="font-size:11px;font-weight:700;color:\${cor}">\${icone} \${estado}</span>
+          </div>
+          <div style="font-size:11px;color:var(--g400);margin-top:5px">
+            \${s.total_imoveis||0} imóveis · \${s.total_rondas} rondas
+            \${s.rondas_com_erro>0?\`· <span style="color:#dc2626">\${s.rondas_com_erro} erros</span>\`:''}
+          </div>
+          <div style="font-size:10px;color:var(--g400);margin-top:2px">Última: \${(s.ultima_exec||'N/D').slice(0,16)}</div>
+        </div>\`;
+      }).join('')}
+    </div>\`;
 }
 
 // ── PESQUISA SEMÂNTICA ────────────────────────────────────
