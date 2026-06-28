@@ -279,12 +279,13 @@ def proxied_get(url, render=True, **kwargs):
     # Fallback direto
     _proxy_stats["direto"] = _proxy_stats.get("direto", 0) + 1
     try:
-        return requests.get(url, headers=random_headers(), timeout=15)
+        r = requests.get(url, headers=random_headers(), timeout=15)
+        if r.status_code != 200:
+            log.debug(f"Direto {url[:50]}: HTTP {r.status_code}")
+        return r
     except Exception as e:
-        log.warning(f"Fallback direto falhou: {e}")
-        # Return empty response
-        import requests as req
-        r = req.models.Response()
+        log.debug(f"Direto falhou {url[:50]}: {e}")
+        r = requests.models.Response()
         r.status_code = 0
         r._content = b""
         return r
@@ -1302,12 +1303,15 @@ def paginar_requests(url_tpl, parse_fn):
 MAX_PROXY_TIMEOUT = 20  # segundos — evita que um scraper bloqueie 112s
 
 def paginar_scraperapi(url_tpl, parse_fn):
-    """Usa rotação de proxies (ScraperAPI/ZenRows/ScrapingBee) para contornar bloqueios."""
+    """Usa rotação de proxies com fallback para Playwright."""
     todos=[]; pag=1
     for pag in range(1,MAX_PAGINAS+1):
         url=url_tpl.format(page=pag)
         def _fetch(u=url):
             r=proxied_get(u, render=True)
+            # Debug: log response size to detect blocked responses
+            if len(r.text) < 500:
+                log.debug(f"    proxy resposta pequena ({len(r.text)} chars): {r.text[:100]}")
             return parse_fn(r.text)
         try:
             items=com_retry(_fetch)
@@ -1317,6 +1321,37 @@ def paginar_scraperapi(url_tpl, parse_fn):
         except Exception as e:
             log.error(f"  proxy pag {pag}: {e}"); break
     return todos,pag
+
+def paginar_playwright(url_tpl, parse_fn, nome="?"):
+    """Usa Playwright para scraping — fallback quando proxies falham."""
+    if not PLAYWRIGHT_AVAILABLE: return [], 0
+    todos=[]; pag=1
+    for pag in range(1, min(3, MAX_PAGINAS)+1):  # max 3 páginas com Playwright
+        url = url_tpl.format(page=pag)
+        with _playwright_semaphore:
+            try:
+                with sync_playwright() as p:
+                    browser = p.chromium.launch(
+                        headless=True, executable_path="/usr/bin/chromium",
+                        args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu",
+                              "--disable-blink-features=AutomationControlled"])
+                    ctx = browser.new_context(
+                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                        viewport={"width":1920,"height":1080}, locale="pt-PT")
+                    page = ctx.new_page()
+                    page.goto(url, wait_until="domcontentloaded", timeout=20000)
+                    page.wait_for_timeout(3000)
+                    html = page.content()
+                    browser.close()
+                items = parse_fn(html)
+                log.info(f"    playwright pag {pag}: {len(items)} items")
+                if not items: break
+                todos.extend(items)
+                time.sleep(2)
+            except Exception as e:
+                log.error(f"  playwright pag {pag} {nome}: {e}")
+                break
+    return todos, pag
 
 def paginar_selenium(url_tpl,parse_fn):
     todos=[]; pag=1
@@ -1373,7 +1408,10 @@ def scrape_idealista(perfil):
                         pt.get_text(strip=True) if pt else "N/D",
                         "Idealista",zl,img.get("src") or img.get("data-src") if img else None))
                 return its
-            items,p=paginar_scraperapi(tpl,parse); res.extend(items); pags+=p
+            items,p=paginar_scraperapi(tpl,parse)
+            if not items:
+                items,p=paginar_playwright(tpl,parse,nome)
+            res.extend(items); pags+=p
     return res,pags
 
 def scrape_imovirtual(perfil):
@@ -1399,7 +1437,10 @@ def scrape_imovirtual(perfil):
                         pt.get_text(strip=True) if pt else "N/D",
                         "Imovirtual",zl,img.get("src") or img.get("data-src") if img else None))
                 return its
-            items,p=paginar_scraperapi(tpl,parse); res.extend(items); pags+=p
+            items,p=paginar_scraperapi(tpl,parse)
+            if not items:
+                items,p=paginar_playwright(tpl,parse,nome)
+            res.extend(items); pags+=p
     return res,pags
 
 def scrape_casasapo(perfil):
@@ -1426,7 +1467,10 @@ def scrape_casasapo(perfil):
                         pt.get_text(strip=True) if pt else "N/D","Casa SAPO",zl,
                         img.get("src") if img else None))
                 return its
-            items,p=paginar_scraperapi(tpl,parse); res.extend(items); pags+=p
+            items,p=paginar_scraperapi(tpl,parse)
+            if not items:
+                items,p=paginar_playwright(tpl,parse,nome)
+            res.extend(items); pags+=p
     return res,pags
 
 def scrape_supercasa(perfil):
@@ -1455,7 +1499,10 @@ def scrape_supercasa(perfil):
                         pt.get_text(strip=True) if pt else "N/D","SuperCasa",zl,
                         img.get("src") if img else None))
                 return its
-            items,p=paginar_scraperapi(tpl,parse); res.extend(items); pags+=p
+            items,p=paginar_scraperapi(tpl,parse)
+            if not items:
+                items,p=paginar_playwright(tpl,parse,nome)
+            res.extend(items); pags+=p
     return res,pags
 
 def _api_scrape(url_tpl, base, fonte, zona, extra_sels=None):
@@ -3014,7 +3061,7 @@ if __name__=="__main__":
             import subprocess, sys
             cmd = [sys.executable, "-m", "gunicorn",
                    f"--bind=0.0.0.0:{PORT}",
-                   "--workers=2", "--threads=4",
+                   "--workers=1", "--threads=4",
                    "--worker-class=gthread",
                    "--timeout=120",
                    "algarve_monitor:app"]
