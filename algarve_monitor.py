@@ -445,6 +445,7 @@ def _mark_exhausted(provider, msg=""):
     d["cooldown_until"] = until
     d["last_error"]     = "quota_exceeded"
     _proxy_exhausted[provider] = _dt.now()
+    _proxy_cooldown[provider] = _dt(2099, 1, 1).timestamp()  # bloqueia TODAS as code paths
     log.warning(f"  🔴 {provider} ESGOTADO — cooldown até {until} | {msg[:60]}")
 
 def provider_status_dict():
