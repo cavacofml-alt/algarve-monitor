@@ -1713,12 +1713,7 @@ def paginar_scraperapi(url_tpl, parse_fn):
                 for prov, patterns in EXHAUSTED_PATTERNS:
                     if any(p.lower() in msg.lower() for p in patterns):
                         _mark_exhausted(prov, msg)
-                        # Retorna resposta vazia imediatamente — não tenta mais este provider
-                        empty = requests.models.Response()
-                        empty.status_code = 429
-                        empty._content = b""
-                        return empty
-                    break
+                        return []  # para imediatamente — não tenta mais este provider
                 else:
                     # Verifica se é erro temporário (concorrência/rate limit)
                     for prov, patterns in TRANSIENT_PATTERNS:
