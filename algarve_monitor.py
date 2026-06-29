@@ -308,13 +308,22 @@ CIRCUIT_FAIL_THRESHOLD = 5
 CIRCUIT_OPEN_SECONDS   = 1800  # 30 min
 CIRCUIT_HALF_OPEN_WAIT = 60    # 1 min antes de testar
 
+# Patterns que indicam quota MENSAL esgotada → cooldown até próximo mês
 EXHAUSTED_PATTERNS = [
     ("zenrows",     ["exhausted the API Credits", "upgrade your subscription"]),
     ("scrapingbee", ["AUTH004", "reached its usage limit"]),
     ("scrapedo",    ["Monthly request limit exceeded"]),
     ("crawlbase",   ["Token is invalid", "exhausted the free tier", "Add Billing"]),
     ("scraperapi",  ["out of API credits"]),
-    ("scrapingant", ["credit", "limit reached", "quota", "insufficient credits", "concurrency limit"]),
+    ("scrapingant", ["insufficient credits", "quota exceeded", "monthly limit"]),
+    # NOTA: "concurrency limit" é temporário — NÃO marca como esgotado mensal
+]
+
+# Patterns que indicam erro TEMPORÁRIO → circuit breaker (30 min)
+TRANSIENT_PATTERNS = [
+    ("scrapingant", ["concurrency limit", "Free user concurrency"]),
+    ("zenrows",     ["rate limit", "too many requests", "429"]),
+    ("scraperapi",  ["rate limit", "429"]),
 ]
 
 def _record_provider(provider, success, latency_ms=0, error=None, domain=None):
@@ -1661,11 +1670,22 @@ def paginar_scraperapi(url_tpl, parse_fn):
             if len(r.text) < 500:
                 msg = r.text[:150]
                 log.warning(f"    proxy resposta bloqueada ({len(r.text)} chars): {msg}")
-                # Marca provider como esgotado se for mensagem de créditos
+                # Verifica se é quota mensal esgotada
                 for prov, patterns in EXHAUSTED_PATTERNS:
                     if any(p.lower() in msg.lower() for p in patterns):
                         _mark_exhausted(prov, msg)
                         break
+                else:
+                    # Verifica se é erro temporário (concorrência/rate limit)
+                    for prov, patterns in TRANSIENT_PATTERNS:
+                        if any(p.lower() in msg.lower() for p in patterns):
+                            d = _provider_data.get(prov, {})
+                            d["consecutive_failures"] = d.get("consecutive_failures",0) + 1
+                            if d["consecutive_failures"] >= 3:
+                                d["circuit_open"] = True
+                                d["circuit_open_until"] = _dt.now().timestamp() + 300  # 5 min
+                                log.warning(f"  ⚡ {prov} em pausa 5min (concorrência)")
+                            break
             return parse_fn(r.text)
         try:
             items=com_retry(_fetch)
