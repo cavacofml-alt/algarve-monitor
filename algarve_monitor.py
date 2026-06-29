@@ -1314,7 +1314,9 @@ def paginar_scraperapi(url_tpl, parse_fn):
             r=proxied_get(u, render=True)
             # Debug: log response size to detect blocked responses
             if len(r.text) < 500:
-                log.debug(f"    proxy resposta pequena ({len(r.text)} chars): {r.text[:100]}")
+                log.warning(f"    proxy resposta bloqueada ({len(r.text)} chars): {r.text[:150]}")
+            elif len(r.text) < 2000:
+                log.info(f"    proxy resposta pequena ({len(r.text)} chars) — possível erro")
             return parse_fn(r.text)
         try:
             items=com_retry(_fetch)
@@ -1413,7 +1415,8 @@ def scrape_idealista(perfil):
                 return its
             items,p=paginar_scraperapi(tpl,parse)
             if not items:
-                items,p=paginar_playwright(tpl,parse,nome)
+                log.info(f"    Proxy 0 items — a tentar Playwright ({tl} {zl})...")
+                items,p=paginar_playwright(tpl,parse,f"{tl} {zl}")
             res.extend(items); pags+=p
     return res,pags
 
@@ -1442,7 +1445,8 @@ def scrape_imovirtual(perfil):
                 return its
             items,p=paginar_scraperapi(tpl,parse)
             if not items:
-                items,p=paginar_playwright(tpl,parse,nome)
+                log.info(f"    Proxy 0 items — a tentar Playwright ({tl} {zl})...")
+                items,p=paginar_playwright(tpl,parse,f"{tl} {zl}")
             res.extend(items); pags+=p
     return res,pags
 
@@ -1472,7 +1476,8 @@ def scrape_casasapo(perfil):
                 return its
             items,p=paginar_scraperapi(tpl,parse)
             if not items:
-                items,p=paginar_playwright(tpl,parse,nome)
+                log.info(f"    Proxy 0 items — a tentar Playwright ({tl} {zl})...")
+                items,p=paginar_playwright(tpl,parse,f"{tl} {zl}")
             res.extend(items); pags+=p
     return res,pags
 
@@ -1504,7 +1509,8 @@ def scrape_supercasa(perfil):
                 return its
             items,p=paginar_scraperapi(tpl,parse)
             if not items:
-                items,p=paginar_playwright(tpl,parse,nome)
+                log.info(f"    Proxy 0 items — a tentar Playwright ({tl} {zl})...")
+                items,p=paginar_playwright(tpl,parse,f"{tl} {zl}")
             res.extend(items); pags+=p
     return res,pags
 
