@@ -2706,6 +2706,7 @@ def correr_scraper(args):
     return anuncios
 
 def verificar_perfil(perfil):
+    _preflight_providers()
     log.info(f"▶ {perfil['nome']} — a correr {len(SCRAPERS)} scrapers em paralelo")
     todos_raw = []
 
