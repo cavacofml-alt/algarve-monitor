@@ -474,28 +474,33 @@ def _mark_exhausted(provider, msg=""):
 def provider_status_dict():
     out = {}
     for p in _PROVIDERS:
-        d   = _provider_data[p]
-        req = d["requests_today"]
-        suc = d["success_today"]
-        lat = d["latencies"]
-        until = d.get("cooldown_until")
+        d    = _provider_data.get(p, {})
+        cfg  = PROVIDER_CONFIG.get(p, {})
+        lats = d.get("latencies", [])
+        req  = d.get("requests_today", 0)
+        suc  = d.get("success_today", 0)
+        total_items = sum(ds[p].get("items_total",0) for ds in _domain_stats.values() if p in ds)
+        total_reqs  = sum(ds[p].get("total",0)       for ds in _domain_stats.values() if p in ds)
+        ipr  = round(total_items / max(total_reqs, 1), 1)
+        avg_lat = round(sum(lats)/len(lats)) if lats else 0
+        score = round((suc/req*0.6 + min(1,2000/max(avg_lat,1))*0.3 - cfg.get("cost_weight",0.2)*0.1)*100
+                      ) if req >= 3 else 0
         out[p] = {
-            "provider":       p,
-            "status":         "cooldown" if (until and _date.today() < until)
-                              else ("active" if req > 0 else "idle"),
-            "cooldown_until": str(until) if until else None,
-            "requests_today": req,
-            "success_rate":   round(suc/req*100, 1) if req else None,
-            "avg_latency_ms": round(sum(lat)/len(lat)) if lat else None,
-            "last_error":     d["last_error"],
+            "requests":             req,
+            "success_rate":         round(suc/req*100,1) if req else 0,
+            "avg_latency_ms":       avg_lat,
+            "items_per_request":    ipr,
+            "score":                score,
+            "circuit_open":         d.get("circuit_open", False),
+            "consecutive_failures": d.get("consecutive_failures", 0),
+            "cooldown_until":       str(d.get("cooldown_until","")) or None,
+            "last_error":           d.get("last_error"),
+            "exhausted":            _is_exhausted(p),
+            "enabled":              cfg.get("enabled", True),
+            "monthly_limit":        cfg.get("monthly_limit"),
+            "cost_weight":          cfg.get("cost_weight"),
         }
     return out
-
-PROXY_COOLDOWN_SECONDS = 300  # 5 min cooldown after failures
-
-# HTTP Cache — evita pedidos repetidos em 30 minutos
-_http_cache = {}
-_http_cache_ttl = 1800  # 30 minutos
 
 def cache_get(url):
     if url in _http_cache:
@@ -569,7 +574,7 @@ def proxied_get(url, render=True, **kwargs):
             ("crawlbase",    CRAWLBASE_KEY),    # antes da ScrapingBee (melhor taxa)
             ("scrapedo",     SCRAPEDO_KEY),
             ("scrapingbee",  SCRAPINGBEE_KEY),
-        ] if key
+        ] if key and PROVIDER_CONFIG.get(p,{}).get("enabled",True)
     ]
     available.sort()
     proxies = [p for _, p in available]
@@ -599,7 +604,10 @@ def proxied_get(url, render=True, **kwargs):
 
     def provider_score(p):
         score, conf, samples = _domain_provider_score(_domain, p)
-        return score
+        cfg   = PROVIDER_CONFIG.get(p, {})
+        prior = max(0, 1 - cfg.get("priority", 10) / 10)
+        # Low confidence → fall back to priority; high confidence → use learned score
+        return score * conf + prior * (1 - conf)
 
     proxies_ativos_now.sort(key=provider_score, reverse=True)
     proxy = proxies_ativos_now[0]
@@ -712,8 +720,13 @@ def get_proxy_stats():
             for k, v in _proxy_stats.items() if v > 0}
 
 def proxies_disponiveis():
-    """Número de proxies configurados (usa API_KEYS dict)."""
-    return sum(bool(v) for v in API_KEYS.values())
+    """Número de proxies configurados e habilitados."""
+    total = 0
+    for prov, key in API_KEYS.items():
+        if not key: continue
+        if not PROVIDER_CONFIG.get(prov, {}).get("enabled", True): continue
+        total += 1
+    return total
 
 # ============================================================
 # BASE DE DADOS
@@ -1075,7 +1088,7 @@ def geocodificar(titulo, zona):
         return round(lat, 6), round(lng, 6)
 
     # Tenta geocodificar via Nominatim se zona não está no mapa
-    cache_key = zona.lower().strip()
+    cache_key = zona.lower().strip()  # url+render+provider handled in proxied_get
     if cache_key in _geocoding_cache:
         return _geocoding_cache[cache_key]
 
@@ -2133,17 +2146,6 @@ def scrape_lnhouse(p):
     try: return _api_scrape("https://www.lnhouse.pt/venda?page={page}","https://www.lnhouse.pt","LNHouse","VRSA/Castro Marim")
     except Exception as e: log.error(f"LNHouse: {e}"); return [],0
 
-def scrape_sortami(p):
-    url=f"https://www.sortami.pt/imoveis/comprar?preco_max={p['preco_max']}&quartos_min={p['quartos_min']}&page={{page}}"
-    try: return _api_scrape(url,"https://www.sortami.pt","Sortami","Algarve Sotavento")
-    except Exception as e: log.error(f"Sortami: {e}"); return [],0
-
-def scrape_garvetur(p):
-    url=(f"https://www.garvetur.pt/imoveis/venda"
-         f"&preco_max={p['preco_max']}&quartos_min={p['quartos_min']}&zona={','.join(p['zonas'])}&page={{page}}")
-    try: return _api_scrape(url,"https://www.garvetur.pt","Garvetur","Algarve")
-    except Exception as e: log.error(f"Garvetur: {e}"); return [],0
-
 def scrape_engelvoelkers(p):
     res=[]; pags=0
     for zs in p["zonas"]:
@@ -2376,10 +2378,6 @@ def scrape_redereal(p):
     urls=[f"https://www.redereal.com/imoveis?tipo=venda&zona=algarve&preco_max={p['preco_max']}"]
     return scrape_generico("Rede Real", urls, p)
 
-def scrape_dalmaportuguesa(p):
-    urls=[f"https://www.dalmaportuguesa.com/imoveis?preco_max={p['preco_max']}"]
-    return scrape_generico("D'Alma Portuguesa", urls, p)
-
 def scrape_vaprealestate(p):
     urls=[f"https://www.vaprealestate.com/properties?max_price={p['preco_max']}&bedrooms={p['quartos_min']}"]
     return scrape_generico("VAP Real Estate", urls, p)
@@ -2403,21 +2401,9 @@ def scrape_mimosa(p):
     urls=[f"https://www.mimosaproperties.com/properties-for-sale?max_price={p['preco_max']}&bedrooms={p['quartos_min']}"]
     return scrape_generico("Mimosa Properties", urls, p)
 
-def scrape_algarveuniqueproperties(p):
-    urls=[f"https://www.algarveuniqueproperties.com/for-sale?max_price={p['preco_max']}"]
-    return scrape_generico("Algarve Unique Properties", urls, p)
-
-def scrape_boto(p):
-    urls=[f"https://www.botoproperties.com/properties-for-sale?max_price={p['preco_max']}&bedrooms={p['quartos_min']}"]
-    return scrape_generico("Boto Properties", urls, p)
-
 def scrape_vernon(p):
     urls=[f"https://www.vernonalgarve.com/for-sale?max_price={p['preco_max']}&bedrooms={p['quartos_min']}"]
     return scrape_generico("Vernon Algarve", urls, p)
-
-def scrape_sunpoint(p):
-    urls=[f"https://www.sunpointproperties.com/for-sale?max_price={p['preco_max']}&bedrooms={p['quartos_min']}"]
-    return scrape_generico("Sunpoint Properties", urls, p)
 
 def scrape_a1algarve(p):
     urls=[f"https://www.a1-algarve.com/properties?max_price={p['preco_max']}&bedrooms={p['quartos_min']}"]
@@ -2593,10 +2579,6 @@ def scrape_yourluxury(p):
         "[class*='property'],[class*='listing'],li[class],article",
         "Triângulo Dourado", p
     )
-
-def scrape_barraprime(p):
-    urls=[f"https://www.barraprime.pt/imoveis-para-venda?preco_max={p['preco_max']}"]
-    return scrape_generico("Barra Prime", urls, p)
 
 def scrape_insidevillas(p):
     urls=[f"https://www.inside-villas.com/for-sale?max_price={p['preco_max']}&bedrooms={p['quartos_min']}"]

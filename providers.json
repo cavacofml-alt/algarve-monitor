@@ -7,7 +7,9 @@
       "supports_js": true,
       "supports_cloudflare": false,
       "max_parallel": 1,
-      "note": "free tier too limited for parallel scraping — low priority"
+      "note": "free tier too limited for parallel scraping — low priority",
+      "weight": 1.0,
+      "enabled": true
     },
     "scraperapi": {
       "priority": 2,
@@ -15,7 +17,9 @@
       "cost_weight": 0.2,
       "supports_js": true,
       "supports_cloudflare": true,
-      "max_parallel": 5
+      "max_parallel": 5,
+      "weight": 1.0,
+      "enabled": true
     },
     "zenrows": {
       "priority": 3,
@@ -23,7 +27,9 @@
       "cost_weight": 0.3,
       "supports_js": true,
       "supports_cloudflare": true,
-      "max_parallel": 3
+      "max_parallel": 3,
+      "weight": 1.0,
+      "enabled": true
     },
     "crawlbase": {
       "priority": 4,
@@ -31,7 +37,9 @@
       "cost_weight": 0.3,
       "supports_js": true,
       "supports_cloudflare": false,
-      "max_parallel": 3
+      "max_parallel": 3,
+      "weight": 1.0,
+      "enabled": true
     },
     "scrapedo": {
       "priority": 5,
@@ -39,7 +47,9 @@
       "cost_weight": 0.2,
       "supports_js": true,
       "supports_cloudflare": false,
-      "max_parallel": 5
+      "max_parallel": 5,
+      "weight": 1.0,
+      "enabled": true
     },
     "scrapingbee": {
       "priority": 6,
@@ -47,7 +57,9 @@
       "cost_weight": 0.3,
       "supports_js": true,
       "supports_cloudflare": true,
-      "max_parallel": 3
+      "max_parallel": 3,
+      "weight": 1.0,
+      "enabled": true
     },
     "webshare": {
       "priority": 7,
@@ -55,7 +67,9 @@
       "cost_weight": 0.0,
       "supports_js": false,
       "supports_cloudflare": false,
-      "max_parallel": 10
+      "max_parallel": 10,
+      "weight": 1.0,
+      "enabled": true
     },
     "proxyscrape": {
       "priority": 8,
@@ -63,7 +77,9 @@
       "cost_weight": 0.0,
       "supports_js": false,
       "supports_cloudflare": false,
-      "max_parallel": 10
+      "max_parallel": 10,
+      "weight": 1.0,
+      "enabled": true
     },
     "playwright": {
       "priority": 99,
@@ -71,7 +87,9 @@
       "cost_weight": 0.0,
       "supports_js": true,
       "supports_cloudflare": true,
-      "max_parallel": 2
+      "max_parallel": 2,
+      "weight": 1.0,
+      "enabled": true
     },
     "direto": {
       "priority": 0,
@@ -79,7 +97,9 @@
       "cost_weight": 0.0,
       "supports_js": false,
       "supports_cloudflare": false,
-      "max_parallel": 20
+      "max_parallel": 20,
+      "weight": 1.0,
+      "enabled": true
     }
   }
 }
