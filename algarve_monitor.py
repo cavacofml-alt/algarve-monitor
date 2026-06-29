@@ -601,12 +601,13 @@ def proxied_get(url, render=True, **kwargs):
             return requests.get(api, timeout=60, headers=random_headers())
 
         elif proxy == "zenrows":
-            params = {
-                "url": url, "apikey": ZENROWS_KEY,
-                "js_render": "true" if render else "false",
-                "premium_proxy": "true",
-            }
-            return requests.get("https://api.zenrows.com/v1/", params=params, timeout=60)
+            with _provider_semaphores.get("zenrows", threading.Semaphore(3)):
+                params = {
+                    "url": url, "apikey": ZENROWS_KEY,
+                    "js_render": "true" if render else "false",
+                    "premium_proxy": "true",
+                }
+                result = requests.get("https://api.zenrows.com/v1/", params=params, timeout=60)
 
         elif proxy == "scrapingbee":
             params = {
@@ -2777,6 +2778,39 @@ def verificar_creditos_scraperapi():
     except Exception as e:
         log.warning(f"Não foi possível verificar créditos ScraperAPI: {e}")
         return None
+
+def _preflight_providers():
+    """Testa cada provider ANTES de lançar scrapers em paralelo.
+    Evita race condition onde 49 threads tentam ZenRows em simultâneo."""
+    TEST_URL = "https://www.example.com"
+    log.info("  Preflight providers...")
+    for prov, key, test_fn in [
+        ("zenrows",    ZENROWS_KEY,     lambda: requests.get("https://api.zenrows.com/v1/", timeout=8,
+            params={"url":TEST_URL,"apikey":ZENROWS_KEY,"js_render":"false"})),
+        ("scrapingbee",SCRAPINGBEE_KEY, lambda: requests.get("https://app.scrapingbee.com/api/v1/", timeout=8,
+            params={"api_key":SCRAPINGBEE_KEY,"url":TEST_URL,"render_js":"false"})),
+        ("scrapedo",   SCRAPEDO_KEY,    lambda: requests.get(
+            f"https://api.scrape.do?token={SCRAPEDO_KEY}&url={requests.utils.quote(TEST_URL)}", timeout=8)),
+        ("crawlbase",  CRAWLBASE_KEY,   lambda: requests.get(
+            f"https://api.crawlbase.com/?token={CRAWLBASE_KEY}&url={requests.utils.quote(TEST_URL)}", timeout=8)),
+    ]:
+        if not key or _is_exhausted(prov):
+            log.info(f"    {prov}: ⏭ ignorado (sem key ou já esgotado)")
+            continue
+        try:
+            r = test_fn()
+            if len(r.text) < 500:
+                msg = r.text[:150]
+                for p, patterns in EXHAUSTED_PATTERNS:
+                    if p == prov and any(pat.lower() in msg.lower() for pat in patterns):
+                        _mark_exhausted(prov, msg)
+                        break
+                else:
+                    log.info(f"    {prov}: ⚠️  resposta pequena ({len(r.text)} chars)")
+            else:
+                log.info(f"    {prov}: ✅ OK ({r.status_code})")
+        except Exception as e:
+            log.debug(f"    {prov} preflight: {e}")
 
 def verificar():
     log.info("="*55)
