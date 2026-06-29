@@ -388,6 +388,9 @@ def _record_provider(provider, success, latency_ms=0, error=None, domain=None):
         ds["total"] += 1
         if success: ds["success"] += 1
         if latency_ms: ds["latencies"] = (ds["latencies"] + [latency_ms])[-20:]
+        # Track items found (passed from scraper context if available)
+        if hasattr(record_provider, '_last_items'):
+            ds["items_total"] = ds.get("items_total", 0) + record_provider._last_items
 
 def _circuit_allows(provider):
     """Verifica se o circuit breaker permite usar este provider."""
@@ -426,13 +429,16 @@ def _domain_provider_score(domain, provider):
         base_priority = 1 - (cfg.get("priority", 5) / 10)
         return (sr * 0.5 + base_priority * 0.5), 0.1, total
 
-    sr  = success / total
+    sr      = success / total
     avg_lat = sum(lats)/len(lats) if lats else 3000
     speed   = min(1.0, 2000 / avg_lat)
     cost    = cfg.get("cost_weight", 0.2)
     headroom = max(0.1, 1 - ds["total"] / max(cfg.get("monthly_limit",1000), 1))
+    # Items per request (normalized: 10+ items = perfect)
+    items_total = ds.get("items_total", 0)
+    ipr   = min(1.0, (items_total / max(total, 1)) / 10)
 
-    score = (sr * 0.6 + speed * 0.3 - cost * 0.1) * headroom
+    score = (sr * 0.40 + ipr * 0.30 + speed * 0.20 - cost * 0.10) * headroom
     return score, confidence, total
 
 def _is_exhausted(provider):
@@ -721,7 +727,22 @@ def init_db():
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS scraper_stats (
+                CREATE TABLE IF NOT EXISTS price_history (
+                id              SERIAL PRIMARY KEY,
+                imovel_id       TEXT NOT NULL,
+                preco           INTEGER NOT NULL,
+                registado_em    TIMESTAMPTZ DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_ph_imovel ON price_history(imovel_id);
+
+            -- Availability tracking
+            ALTER TABLE imoveis
+                ADD COLUMN IF NOT EXISTS first_seen  TIMESTAMPTZ DEFAULT NOW(),
+                ADD COLUMN IF NOT EXISTS last_seen   TIMESTAMPTZ DEFAULT NOW(),
+                ADD COLUMN IF NOT EXISTS dias_online INTEGER DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS preco_inicial INTEGER;
+
+            CREATE TABLE IF NOT EXISTS scraper_stats (
                 nome            TEXT PRIMARY KEY,
                 total_runs      INTEGER DEFAULT 0,
                 success_runs    INTEGER DEFAULT 0,
@@ -803,7 +824,22 @@ def init_db():
                     avaliacao   INTEGER CHECK(avaliacao BETWEEN 1 AND 5),
                     criado_em   TIMESTAMP DEFAULT NOW()
                 );
-                CREATE TABLE IF NOT EXISTS scraper_stats (
+                CREATE TABLE IF NOT EXISTS price_history (
+                id              SERIAL PRIMARY KEY,
+                imovel_id       TEXT NOT NULL,
+                preco           INTEGER NOT NULL,
+                registado_em    TIMESTAMPTZ DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_ph_imovel ON price_history(imovel_id);
+
+            -- Availability tracking
+            ALTER TABLE imoveis
+                ADD COLUMN IF NOT EXISTS first_seen  TIMESTAMPTZ DEFAULT NOW(),
+                ADD COLUMN IF NOT EXISTS last_seen   TIMESTAMPTZ DEFAULT NOW(),
+                ADD COLUMN IF NOT EXISTS dias_online INTEGER DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS preco_inicial INTEGER;
+
+            CREATE TABLE IF NOT EXISTS scraper_stats (
                     id          SERIAL PRIMARY KEY,
                     fonte       TEXT NOT NULL,
                     perfil_nome TEXT,
@@ -3477,6 +3513,31 @@ def api_provider_status():
             remaining = max(0, int((pd["circuit_open_until"] - _dt.now().timestamp())/60))
             d["circuit_open_minutes_remaining"] = remaining
     return jsonify(result)
+
+@app.route("/api/price_history/<path:imovel_id>")
+@login_required
+def api_price_history(imovel_id):
+    """Histórico de preços de um imóvel."""
+    try:
+        with get_db() as conn:
+            rows = conn.execute("""
+                SELECT preco, registado_em FROM price_history
+                WHERE imovel_id=%s ORDER BY registado_em
+            """, (imovel_id,)).fetchall()
+            hist = [{"preco": r[0], "data": r[1].strftime("%d/%m/%Y")} for r in rows]
+            # Current price
+            cur = conn.execute(
+                "SELECT preco_valor, preco_inicial, first_seen, dias_online FROM imoveis WHERE url=%s",
+                (imovel_id,)).fetchone()
+            return jsonify({
+                "historico": hist,
+                "preco_atual": cur[0] if cur else None,
+                "preco_inicial": cur[1] if cur else None,
+                "first_seen": cur[2].strftime("%d/%m/%Y") if cur and cur[2] else None,
+                "dias_online": cur[3] if cur else None,
+            })
+    except Exception as e:
+        return jsonify({"erro": str(e)}), 500
 
 @app.route("/api/domain_stats")
 @login_required
