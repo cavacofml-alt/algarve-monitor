@@ -146,10 +146,92 @@ def random_headers():
 
 _proxy_counter = 0
 
+# ── Free Proxy Pool (Webshare + ProxyScrape) ─────────────────
+_free_proxy_pool   = []   # ["ip:port", ...]
+_free_proxy_bad    = set() # proxies que falharam
+_free_proxy_ts     = 0     # último refresh
+_FREE_PROXY_TTL    = 1800  # refresh a cada 30 min
+
+def _refresh_free_proxies():
+    """Atualiza lista de proxies gratuitos de ProxyScrape e Webshare."""
+    global _free_proxy_pool, _free_proxy_ts
+    if time.time() - _free_proxy_ts < _FREE_PROXY_TTL:
+        return  # ainda fresco
+
+    pool = []
+
+    # 1. ProxyScrape — sem auth, lista pública
+    try:
+        r = requests.get(
+            "https://api.proxyscrape.com/v2/?request=displayproxies"
+            "&protocol=http&timeout=5000&country=all&ssl=all&anonymity=elite",
+            timeout=15)
+        proxies = [p.strip() for p in r.text.splitlines()
+                   if p.strip() and ':' in p and len(p.strip()) < 30]
+        pool.extend(proxies[:50])  # max 50
+        log.info(f"  ProxyScrape: {len(proxies)} proxies carregados")
+    except Exception as e:
+        log.debug(f"  ProxyScrape fetch error: {e}")
+
+    # 2. Webshare — requer WEBSHARE_KEY no Railway (free tier: 10 proxies, 1GB/mês)
+    WKEY = os.getenv("WEBSHARE_KEY","")
+    if WKEY:
+        try:
+            r = requests.get(
+                "https://proxy.webshare.io/api/v2/proxy/list/"
+                "?mode=direct&page=1&page_size=25",
+                headers={"Authorization": f"Token {WKEY}"}, timeout=15)
+            data = r.json()
+            ws_proxies = [
+                f"{p['proxy_address']}:{p['port']}"
+                for p in data.get("results", [])
+                if p.get("valid")
+            ]
+            pool.extend(ws_proxies)
+            log.info(f"  Webshare: {len(ws_proxies)} proxies carregados")
+        except Exception as e:
+            log.debug(f"  Webshare fetch error: {e}")
+
+    # Remove proxies que já falharam nesta sessão
+    pool = [p for p in pool if p not in _free_proxy_bad]
+    random.shuffle(pool)
+    _free_proxy_pool = pool
+    _free_proxy_ts   = time.time()
+    if pool:
+        log.info(f"  Free proxy pool: {len(pool)} proxies disponíveis")
+
+def _try_free_proxy(url, timeout=15):
+    """Tenta obter URL via pool de proxies gratuitos. Retorna response ou None."""
+    _refresh_free_proxies()
+    if not _free_proxy_pool:
+        return None
+
+    # Tenta até 3 proxies diferentes
+    tried = 0
+    for proxy_addr in list(_free_proxy_pool):
+        if proxy_addr in _free_proxy_bad or tried >= 3:
+            break
+        tried += 1
+        try:
+            t0 = time.time()
+            r = requests.get(url, timeout=timeout,
+                proxies={"http": f"http://{proxy_addr}",
+                         "https": f"http://{proxy_addr}"},
+                headers=random_headers(), verify=False)
+            ms = int((time.time()-t0)*1000)
+            if r.status_code == 200 and len(r.text) > 500:
+                _record_provider("direto", True, ms)
+                return r
+            else:
+                _free_proxy_bad.add(proxy_addr)
+        except Exception:
+            _free_proxy_bad.add(proxy_addr)
+    return None
+
 # ── Provider metrics ──────────────────────────────────────────
 from datetime import datetime as _dt, date as _date
 
-_PROVIDERS = ["zenrows","scrapingbee","scrapedo","crawlbase","scraperapi","playwright","direto"]
+_PROVIDERS = ["zenrows","scrapingbee","scrapedo","crawlbase","scraperapi","scrapingant","playwright","direto"]
 _provider_data = {p: {
     "requests_today": 0, "success_today": 0,
     "latencies": [], "last_error": None,
@@ -168,6 +250,7 @@ EXHAUSTED_PATTERNS = [
     ("scrapedo",    ["Monthly request limit exceeded"]),
     ("crawlbase",   ["Token is invalid", "exhausted the free tier", "Add Billing"]),
     ("scraperapi",  ["out of API credits"]),
+    ("scrapingant", ["credit", "limit reached", "quota", "insufficient credits"]),
 ]
 
 def _record_provider(provider, success, latency_ms=0, error=None):
@@ -267,16 +350,35 @@ def registar_proxy_resultado(proxy, sucesso, tempo_ms):
 def proxied_get(url, render=True, **kwargs):
     """
     Rotação automática entre todos os proxies disponíveis:
-    ScraperAPI → ZenRows → ScrapingBee → Crawlbase → Scrape.do → direto
+    ScraperAPI → ZenRows → ScrapingBee → ScrapingAnt → Crawlbase → Scrape.do → direto
+    Usa apenas os que têm SCRAPINGANT_KEY configurada no Railway.
     Usa apenas os que têm chave configurada.
     """
     global _proxy_counter
+    # 0. Tenta direto primeiro (sem custo)
+    try:
+        t0 = time.time()
+        r0 = requests.get(url, timeout=8, headers=random_headers(), verify=False)
+        if r0.status_code == 200 and len(r0.text) > 1000:
+            _record_provider("direto", True, int((time.time()-t0)*1000))
+            return r0
+    except Exception:
+        pass
+
+    # 1. Free proxies (ProxyScrape + Webshare) — só para sites sem JS
+    if not render:
+        free_r = _try_free_proxy(url, timeout=12)
+        if free_r and len(free_r.text) > 1000:
+            return free_r
+
+    # 2-8. Proxies pagos por ordem de generosidade
     proxies = []
-    if SCRAPERAPI_KEY:  proxies.append("scraperapi")
-    if ZENROWS_KEY:     proxies.append("zenrows")
-    if SCRAPINGBEE_KEY: proxies.append("scrapingbee")
-    if CRAWLBASE_KEY:   proxies.append("crawlbase")
-    if SCRAPEDO_KEY:    proxies.append("scrapedo")
+    if SANTKEY:         proxies.append("scrapingant")   # 10.000/mês
+    if SCRAPERAPI_KEY:  proxies.append("scraperapi")    #  5.000/mês
+    if ZENROWS_KEY:     proxies.append("zenrows")       #  1.000/mês
+    if SCRAPINGBEE_KEY: proxies.append("scrapingbee")   #  trial
+    if CRAWLBASE_KEY:   proxies.append("crawlbase")     #  1.000
+    if SCRAPEDO_KEY:    proxies.append("scrapedo")      #  grátis
 
     if not proxies:
         _proxy_stats["direto"] += 1
@@ -335,6 +437,15 @@ def proxied_get(url, render=True, **kwargs):
             api = f"https://api.crawlbase.com/?token={CRAWLBASE_KEY}&url={requests.utils.quote(url)}{ajax}"
             return requests.get(api, timeout=60, headers=random_headers())
 
+        elif proxy == "scrapingant":
+            # ScrapingAnt — JS rendering
+            params = {
+                "url": url, "x-api-key": SANTKEY,
+                "browser": "true" if render else "false",
+            }
+            result = requests.get("https://api.scrapingant.com/v2/general",
+                params=params, timeout=60)
+
         elif proxy == "scrapedo":
             # Scrape.do — suporta JS com &render=true
             rp = "&render=true" if render else ""
@@ -370,7 +481,7 @@ def get_proxy_stats():
 def proxies_disponiveis():
     """Número de proxies configurados."""
     return sum([bool(SCRAPERAPI_KEY), bool(ZENROWS_KEY), bool(SCRAPINGBEE_KEY),
-                bool(CRAWLBASE_KEY), bool(SCRAPEDO_KEY)])
+                bool(SANTKEY), bool(CRAWLBASE_KEY), bool(SCRAPEDO_KEY)])
 
 # ============================================================
 # BASE DE DADOS
