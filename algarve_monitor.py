@@ -308,6 +308,13 @@ CIRCUIT_FAIL_THRESHOLD = 5
 CIRCUIT_OPEN_SECONDS   = 1800  # 30 min
 CIRCUIT_HALF_OPEN_WAIT = 60    # 1 min antes de testar
 
+# Thresholds por provider (sobrepõe os globais)
+CIRCUIT_THRESHOLDS = {
+    "scrapingant": {"fail": 1, "open_secs": 3600},  # 1 falha → 1h cooldown
+    "zenrows":     {"fail": 3, "open_secs": 1800},
+    "scrapingbee": {"fail": 3, "open_secs": 1800},
+}
+
 # Patterns que indicam quota MENSAL esgotada → cooldown até próximo mês
 EXHAUSTED_PATTERNS = [
     ("zenrows",     ["exhausted the API Credits", "upgrade your subscription"]),
@@ -344,13 +351,17 @@ def _record_provider(provider, success, latency_ms=0, error=None, domain=None):
     else:
         d["consecutive_failures"] = d.get("consecutive_failures", 0) + 1
         if error: d["last_error"] = error
-        if d["consecutive_failures"] >= CIRCUIT_FAIL_THRESHOLD and not d.get("circuit_open"):
-            until = _dt.now().timestamp() + CIRCUIT_OPEN_SECONDS
+        thresholds = CIRCUIT_THRESHOLDS.get(provider, {})
+        fail_limit = thresholds.get("fail", CIRCUIT_FAIL_THRESHOLD)
+        open_secs  = thresholds.get("open_secs", CIRCUIT_OPEN_SECONDS)
+        if d["consecutive_failures"] >= fail_limit and not d.get("circuit_open"):
+            until = _dt.now().timestamp() + open_secs
             d["circuit_open"] = True
             d["circuit_open_until"] = until
             d["circuit_half_open"] = False
+            pause_min = open_secs // 60
             log.warning(f"  ⚡ Circuit breaker ABERTO: {provider} "
-                        f"({d['consecutive_failures']} falhas) — pausa 30min")
+                        f"({d['consecutive_failures']} falhas) — pausa {pause_min}min")
 
     if latency_ms: d["latencies"] = (d["latencies"] + [latency_ms])[-100:]
     _proxy_stats[provider] = _proxy_stats.get(provider, 0) + (1 if success else 0)
@@ -608,22 +619,30 @@ def proxied_get(url, render=True, **kwargs):
             return requests.get(api, timeout=60, headers=random_headers())
 
         elif proxy == "scrapingant":
-            # ScrapingAnt — tenta adquirir semáforo; se ocupado, salta para próximo provider
-            acquired = _provider_semaphores["scrapingant"].acquire(timeout=2)
+            # ScrapingAnt — só usa se for o único provider disponível
+            # (free tier: 1 pedido simultâneo, timeout agressivo)
+            outros_disponiveis = [p for p in proxies_ativos_now
+                                  if p != "scrapingant" and not _is_exhausted(p)]
+            if outros_disponiveis:
+                # Há outros providers — salta ScrapingAnt para evitar fila
+                r = requests.models.Response()
+                r.status_code = 503
+                r._content = b'{"skip": "others_available"}'
+                return r
+            # Só chega aqui se ScrapingAnt for o único disponível
+            acquired = _provider_semaphores["scrapingant"].acquire(timeout=1)
             if not acquired:
-                log.debug("ScrapingAnt ocupado — a saltar para próximo provider")
-                # Raise sem registar como falha (não é erro, é concorrência)
                 r = requests.models.Response()
                 r.status_code = 503
                 r._content = b'{"skip": "busy"}'
-                return r  # retorna 503 que será tratado como 0 items sem penalizar
+                return r
             try:
                 params = {
                     "url": url, "x-api-key": SCRAPINGANT_KEY,
                     "browser": "true" if render else "false",
                 }
                 result = requests.get("https://api.scrapingant.com/v2/general",
-                    params=params, timeout=30)
+                    params=params, timeout=5)
             finally:
                 _provider_semaphores["scrapingant"].release()
 
