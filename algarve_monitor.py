@@ -312,6 +312,11 @@ _provider_semaphores = {
 # Per-domain stats: domain -> provider -> {success, total, latencies}
 _domain_stats = _dd(lambda: _dd(lambda: {"success":0,"total":0,"latencies":[]}))
 
+# HTTP response cache (url → (timestamp, html))
+from collections import OrderedDict
+_http_cache     = OrderedDict()
+_http_cache_ttl = 1800  # 30 minutos
+
 _proxy_stats    = {}
 _proxy_exhausted = {}
 _proxy_success  = {}
@@ -510,11 +515,12 @@ def cache_get(url):
     return None
 
 def cache_set(url, data):
+    # OrderedDict LRU — move_to_end é O(1)
+    if url in _http_cache:
+        _http_cache.move_to_end(url)
     _http_cache[url] = (time.time(), data)
-    # Limpar cache antigo (max 200 entradas)
-    if len(_http_cache) > 200:
-        oldest = sorted(_http_cache.keys(), key=lambda k: _http_cache[k][0])[:50]
-        for k in oldest: del _http_cache[k]
+    while len(_http_cache) > 200:
+        _http_cache.popitem(last=False)  # remove mais antigo O(1)
 
 def registar_proxy_resultado(proxy, sucesso, tempo_ms):
     """Regista resultado de um pedido para o proxy manager."""
