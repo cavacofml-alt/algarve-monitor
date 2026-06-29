@@ -549,9 +549,10 @@ def proxied_get(url, render=True, **kwargs):
         log.debug(f"Cache hit: {url[:60]}")
         return cached
 
-    # Filter out proxies in cooldown
-    now = time.time()
-    proxies_ativos_now = [p for p in proxies if now > _proxy_cooldown.get(p, 0)]
+    # Filtra providers esgotados (quota mensal) e em cooldown
+    proxies_ativos_now = [p for p in proxies
+                          if not _is_exhausted(p)
+                          and time.time() > _proxy_cooldown.get(p, 0)]
     if not proxies_ativos_now:
         # All in cooldown — use the one with least cooldown time
         proxies_ativos_now = sorted(proxies, key=lambda p: _proxy_cooldown.get(p, 0))[:1]
@@ -611,7 +612,11 @@ def proxied_get(url, render=True, **kwargs):
             acquired = _provider_semaphores["scrapingant"].acquire(timeout=2)
             if not acquired:
                 log.debug("ScrapingAnt ocupado — a saltar para próximo provider")
-                raise Exception("ScrapingAnt busy, skip")
+                # Raise sem registar como falha (não é erro, é concorrência)
+                r = requests.models.Response()
+                r.status_code = 503
+                r._content = b'{"skip": "busy"}'
+                return r  # retorna 503 que será tratado como 0 items sem penalizar
             try:
                 params = {
                     "url": url, "x-api-key": SCRAPINGANT_KEY,
@@ -1642,10 +1647,12 @@ def validar(item, perfil):
     # Validar preço máximo
     pv = item.get("preco_valor")
     if pv and pv > perfil["preco_max"]:
+        log.debug(f"  validar REJEITADO preço {pv} > max {perfil['preco_max']} | {item.get('fonte')} {item.get('titulo','')[:30]}")
         return False
 
     # Excluir preços mensais (arrendamento)
     if pv and pv < 10000:
+        log.debug(f"  validar REJEITADO preço {pv} < 10000 (possível renda) | {item.get('fonte')}")
         return False
 
     return True
@@ -1673,9 +1680,15 @@ def paginar_scraperapi(url_tpl, parse_fn):
         def _fetch(u=url):
             r=proxied_get(u, render=True)
             # Detecta e regista respostas bloqueadas
+            if r.status_code == 503 and b'"skip"' in r.content:
+                return []  # ScrapingAnt busy — silencioso, não é erro
             if len(r.text) < 500:
                 msg = r.text[:150]
-                log.warning(f"    proxy resposta bloqueada ({len(r.text)} chars): {msg}")
+                # Só loga a primeira vez que um provider fica bloqueado
+                if not _is_exhausted(proxy):
+                    log.warning(f"    proxy resposta bloqueada ({len(r.text)} chars): {msg}")
+                else:
+                    log.debug(f"    {proxy} já esgotado — a saltar")
                 # Verifica se é quota mensal esgotada
                 for prov, patterns in EXHAUSTED_PATTERNS:
                     if any(p.lower() in msg.lower() for p in patterns):
