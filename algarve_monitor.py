@@ -86,6 +86,19 @@ ZENROWS_KEY        = os.getenv("ZENROWS_KEY", "")
 SCRAPINGBEE_KEY    = os.getenv("SCRAPINGBEE_KEY", "")
 CRAWLBASE_KEY      = os.getenv("CRAWLBASE_KEY", "")
 SCRAPEDO_KEY       = os.getenv("SCRAPEDO_KEY", "")
+SCRAPINGANT_KEY    = os.getenv("SCRAPINGANT_KEY", "")
+WEBSHARE_KEY       = os.getenv("WEBSHARE_KEY", "")
+
+# Dicionário central de API keys — adicionar novos providers aqui
+API_KEYS = {
+    "scrapingant":  SCRAPINGANT_KEY,
+    "scraperapi":   SCRAPERAPI_KEY,
+    "zenrows":      ZENROWS_KEY,
+    "crawlbase":    CRAWLBASE_KEY,
+    "scrapedo":     SCRAPEDO_KEY,
+    "scrapingbee":  SCRAPINGBEE_KEY,
+    "webshare":     WEBSHARE_KEY,
+}
 PORT               = int(os.getenv("PORT", "8080"))
 GOOGLE_MAPS_KEY    = os.getenv("GOOGLE_MAPS_KEY", "")    # opcional para geocoding
 VAPID_PUBLIC_KEY   = os.getenv("VAPID_PUBLIC_KEY", "")
@@ -498,7 +511,7 @@ def proxied_get(url, render=True, **kwargs):
     available = [
         (PROVIDER_CONFIG.get(p,{}).get("priority",99), p)
         for p, key in [
-            ("scrapingant",  SANTKEY),
+            ("scrapingant",  SCRAPINGANT_KEY),
             ("scraperapi",   SCRAPERAPI_KEY),
             ("zenrows",      ZENROWS_KEY),
             ("crawlbase",    CRAWLBASE_KEY),    # antes da ScrapingBee (melhor taxa)
@@ -578,7 +591,7 @@ def proxied_get(url, render=True, **kwargs):
         elif proxy == "scrapingant":
             # ScrapingAnt — JS rendering
             params = {
-                "url": url, "x-api-key": SANTKEY,
+                "url": url, "x-api-key": SCRAPINGANT_KEY,
                 "browser": "true" if render else "false",
             }
             result = requests.get("https://api.scrapingant.com/v2/general",
@@ -620,9 +633,8 @@ def get_proxy_stats():
             for k, v in _proxy_stats.items() if v > 0}
 
 def proxies_disponiveis():
-    """Número de proxies configurados."""
-    return sum([bool(SCRAPERAPI_KEY), bool(ZENROWS_KEY), bool(SCRAPINGBEE_KEY),
-                bool(SANTKEY), bool(CRAWLBASE_KEY), bool(SCRAPEDO_KEY)])
+    """Número de proxies configurados (usa API_KEYS dict)."""
+    return sum(bool(v) for v in API_KEYS.values())
 
 # ============================================================
 # BASE DE DADOS
