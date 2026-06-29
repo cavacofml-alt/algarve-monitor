@@ -628,6 +628,12 @@ def proxied_get(url, render=True, **kwargs):
     score, conf, n = _domain_provider_score(_domain, proxy)
     log.debug(f"Proxy: {proxy} [{_proxy_counter}] render={render} score={score:.2f}(conf={conf:.1f},n={n})")
 
+
+    # _session_exhausted: set O(1) — check antes de qualquer trabalho
+    if proxy in _session_exhausted:
+        r = requests.models.Response(); r.status_code = 0; r._content = b""
+        return r
+
     t0 = time.time()
     try:
         # Re-verifica se proxy ainda está válido (pode ter sido marcado entre tentativas)
@@ -2918,9 +2924,14 @@ def verificar_creditos_scraperapi():
         log.warning(f"Não foi possível verificar créditos ScraperAPI: {e}")
         return None
 
+_preflight_done = False
+
 def _preflight_providers():
     """Testa cada provider ANTES de lançar scrapers em paralelo.
     Evita race condition onde 49 threads tentam ZenRows em simultâneo."""
+    global _preflight_done
+    if _preflight_done: return
+    _preflight_done = True
     TEST_URL = "https://www.example.com"
     log.info("  Preflight providers...")
     for prov, key, test_fn in [
