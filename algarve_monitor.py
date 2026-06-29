@@ -231,7 +231,34 @@ def _try_free_proxy(url, timeout=15):
 # ── Provider metrics ──────────────────────────────────────────
 from datetime import datetime as _dt, date as _date
 
-_PROVIDERS = ["zenrows","scrapingbee","scrapedo","crawlbase","scraperapi","scrapingant","playwright","direto"]
+# Carrega configuração de providers (providers.json ou defaults)
+def _load_provider_config():
+    import json as _json
+    defaults = {
+        "scrapingant": {"priority":1,"monthly_limit":10000,"cost_weight":0.1,"js":True},
+        "scraperapi":  {"priority":2,"monthly_limit":5000, "cost_weight":0.2,"js":True},
+        "zenrows":     {"priority":3,"monthly_limit":1000, "cost_weight":0.3,"js":True},
+        "crawlbase":   {"priority":4,"monthly_limit":1000, "cost_weight":0.3,"js":True},
+        "scrapedo":    {"priority":5,"monthly_limit":1000, "cost_weight":0.2,"js":True},
+        "scrapingbee": {"priority":6,"monthly_limit":1000, "cost_weight":0.3,"js":True},
+        "webshare":    {"priority":7,"monthly_limit":99999,"cost_weight":0.0,"js":False},
+        "proxyscrape": {"priority":8,"monthly_limit":99999,"cost_weight":0.0,"js":False},
+        "playwright":  {"priority":99,"monthly_limit":99999,"cost_weight":0.0,"js":True},
+        "direto":      {"priority":0,"monthly_limit":99999,"cost_weight":0.0,"js":False},
+    }
+    cfg_path = os.path.join(os.path.dirname(__file__), "providers.json")
+    if os.path.exists(cfg_path):
+        try:
+            with open(cfg_path) as f:
+                data = _json.load(f)
+            defaults.update(data.get("providers", {}))
+            log.info(f"providers.json carregado: {list(data.get('providers',{}).keys())}")
+        except Exception as e:
+            log.warning(f"providers.json erro: {e} — a usar defaults")
+    return defaults
+
+PROVIDER_CONFIG = _load_provider_config()
+_PROVIDERS = list(PROVIDER_CONFIG.keys())
 _provider_data = {p: {
     "requests_today": 0, "success_today": 0,
     "latencies": [], "last_error": None,
@@ -373,12 +400,20 @@ def proxied_get(url, render=True, **kwargs):
 
     # 2-8. Proxies pagos por ordem de generosidade
     proxies = []
-    if SANTKEY:         proxies.append("scrapingant")   # 10.000/mês
-    if SCRAPERAPI_KEY:  proxies.append("scraperapi")    #  5.000/mês
-    if ZENROWS_KEY:     proxies.append("zenrows")       #  1.000/mês
-    if SCRAPINGBEE_KEY: proxies.append("scrapingbee")   #  trial
-    if CRAWLBASE_KEY:   proxies.append("crawlbase")     #  1.000
-    if SCRAPEDO_KEY:    proxies.append("scrapedo")      #  grátis
+    # Ordena por prioridade do providers.json (menor = primeiro)
+    available = [
+        (PROVIDER_CONFIG.get(p,{}).get("priority",99), p)
+        for p, key in [
+            ("scrapingant",  SANTKEY),
+            ("scraperapi",   SCRAPERAPI_KEY),
+            ("zenrows",      ZENROWS_KEY),
+            ("crawlbase",    CRAWLBASE_KEY),    # antes da ScrapingBee (melhor taxa)
+            ("scrapedo",     SCRAPEDO_KEY),
+            ("scrapingbee",  SCRAPINGBEE_KEY),
+        ] if key
+    ]
+    available.sort()
+    proxies = [p for _, p in available]
 
     if not proxies:
         _proxy_stats["direto"] += 1
@@ -397,14 +432,31 @@ def proxied_get(url, render=True, **kwargs):
         # All in cooldown — use the one with least cooldown time
         proxies_ativos_now = sorted(proxies, key=lambda p: _proxy_cooldown.get(p, 0))[:1]
 
-    # Sort by success rate (prefer better proxies)
-    def taxa_sucesso(p):
-        total = _proxy_stats.get(p, 0)
-        if total < 3: return 0.5  # neutral for new proxies
-        return _proxy_success.get(p, 0) / total
+    # Score automático: success_rate * 0.6 + speed * 0.3 - cost * 0.1
+    def provider_score(p):
+        d    = _provider_data.get(p, {})
+        req  = d.get("requests_today", 0)
+        suc  = d.get("success_today", 0)
+        lats = d.get("latencies", [])
+        cfg  = PROVIDER_CONFIG.get(p, {})
 
-    proxies_ativos_now.sort(key=taxa_sucesso, reverse=True)
-    proxy = proxies_ativos_now[_proxy_counter % len(proxies_ativos_now)]
+        success_rate = (suc / req) if req >= 3 else 0.75  # neutral se pouca história
+        speed_score  = min(1.0, 2000 / max(avg_lat, 100)) if (avg_lat := (sum(lats)/len(lats) if lats else 2000)) else 0.5
+        cost_weight  = cfg.get("cost_weight", 0.2)
+        # Penaliza providers próximos do limite mensal
+        limit     = cfg.get("monthly_limit", 1000)
+        used      = req
+        headroom  = max(0, 1 - used / max(limit, 1))
+
+        score = (success_rate * 0.6 + speed_score * 0.3 - cost_weight * 0.1) * headroom
+        return score
+
+    proxies_ativos_now.sort(key=provider_score, reverse=True)
+    # Log scores para debug
+    if log.isEnabledFor(logging.DEBUG):
+        scores = {p: round(provider_score(p)*100) for p in proxies_ativos_now}
+        log.debug(f"Provider scores: {scores}")
+    proxy = proxies_ativos_now[0]  # sempre o melhor
     _proxy_counter += 1
     log.debug(f"Proxy: {proxy} [{_proxy_counter}] render={render} taxa={taxa_sucesso(proxy):.0%}")
 

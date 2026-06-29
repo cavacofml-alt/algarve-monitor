@@ -1,0 +1,14 @@
+{
+  "providers": {
+    "scrapingant":  {"priority": 1, "monthly_limit": 10000, "cost_weight": 0.1, "js": true},
+    "scraperapi":   {"priority": 2, "monthly_limit": 5000,  "cost_weight": 0.2, "js": true},
+    "zenrows":      {"priority": 3, "monthly_limit": 1000,  "cost_weight": 0.3, "js": true},
+    "crawlbase":    {"priority": 4, "monthly_limit": 1000,  "cost_weight": 0.3, "js": true},
+    "scrapedo":     {"priority": 5, "monthly_limit": 1000,  "cost_weight": 0.2, "js": true},
+    "scrapingbee":  {"priority": 6, "monthly_limit": 1000,  "cost_weight": 0.3, "js": true},
+    "webshare":     {"priority": 7, "monthly_limit": 99999, "cost_weight": 0.0, "js": false},
+    "proxyscrape":  {"priority": 8, "monthly_limit": 99999, "cost_weight": 0.0, "js": false},
+    "playwright":   {"priority": 99,"monthly_limit": 99999, "cost_weight": 0.0, "js": true},
+    "direto":       {"priority": 0, "monthly_limit": 99999, "cost_weight": 0.0, "js": false}
+  }
+}
