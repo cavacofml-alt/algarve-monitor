@@ -318,6 +318,7 @@ _proxy_success  = {}
 _proxy_fail     = {}
 _proxy_time     = {}
 _proxy_cooldown = {}
+_session_exhausted = set()  # providers esgotados NESTA sessão — nunca tentados
 
 CIRCUIT_FAIL_THRESHOLD = 5
 CIRCUIT_OPEN_SECONDS   = 1800  # 30 min
@@ -460,7 +461,8 @@ def _mark_exhausted(provider, msg=""):
     d["cooldown_until"] = until
     d["last_error"]     = "quota_exceeded"
     _proxy_exhausted[provider] = _dt.now()
-    _proxy_cooldown[provider] = _dt(2099, 1, 1).timestamp()  # bloqueia TODAS as code paths
+    _proxy_cooldown[provider] = _dt(2099, 1, 1).timestamp()
+    _session_exhausted.add(provider)  # nunca tentado novamente nesta sessão
     log.warning(f"  🔴 {provider} ESGOTADO — cooldown até {until} | {msg[:60]}")
 
 def provider_status_dict():
@@ -578,7 +580,8 @@ def proxied_get(url, render=True, **kwargs):
 
     # Filtra providers esgotados (quota mensal) e em cooldown
     proxies_ativos_now = [p for p in proxies
-                          if not _is_exhausted(p)
+                          if p not in _session_exhausted
+                          and not _is_exhausted(p)
                           and time.time() > _proxy_cooldown.get(p, 0)]
     if not proxies_ativos_now:
         # All in cooldown — use the one with least cooldown time
@@ -1840,8 +1843,11 @@ def scrape_idealista(perfil):
                 return its
             items,p=paginar_scraperapi(tpl,parse)
             if not items:
-                log.info(f"    Proxy 0 items — a tentar Playwright ({tl} {zl})...")
-                items,p=paginar_playwright(tpl,parse,f"{tl} {zl}")
+                # Portais grandes bloqueiam sempre Playwright de datacenter — não tentar
+                _no_pw = ["idealista","imovirtual","casa.sapo","supercasa","sapo.pt"]
+                if not any(x in tpl.lower() for x in _no_pw):
+                    log.info(f"    Proxy 0 items — a tentar Playwright ({tl} {zl})...")
+                    items,p=paginar_playwright(tpl,parse,f"{tl} {zl}")
             res.extend(items); pags+=p
     return res,pags
 
@@ -1870,8 +1876,11 @@ def scrape_imovirtual(perfil):
                 return its
             items,p=paginar_scraperapi(tpl,parse)
             if not items:
-                log.info(f"    Proxy 0 items — a tentar Playwright ({tl} {zl})...")
-                items,p=paginar_playwright(tpl,parse,f"{tl} {zl}")
+                # Portais grandes bloqueiam sempre Playwright de datacenter — não tentar
+                _no_pw = ["idealista","imovirtual","casa.sapo","supercasa","sapo.pt"]
+                if not any(x in tpl.lower() for x in _no_pw):
+                    log.info(f"    Proxy 0 items — a tentar Playwright ({tl} {zl})...")
+                    items,p=paginar_playwright(tpl,parse,f"{tl} {zl}")
             res.extend(items); pags+=p
     return res,pags
 
@@ -1901,8 +1910,11 @@ def scrape_casasapo(perfil):
                 return its
             items,p=paginar_scraperapi(tpl,parse)
             if not items:
-                log.info(f"    Proxy 0 items — a tentar Playwright ({tl} {zl})...")
-                items,p=paginar_playwright(tpl,parse,f"{tl} {zl}")
+                # Portais grandes bloqueiam sempre Playwright de datacenter — não tentar
+                _no_pw = ["idealista","imovirtual","casa.sapo","supercasa","sapo.pt"]
+                if not any(x in tpl.lower() for x in _no_pw):
+                    log.info(f"    Proxy 0 items — a tentar Playwright ({tl} {zl})...")
+                    items,p=paginar_playwright(tpl,parse,f"{tl} {zl}")
             res.extend(items); pags+=p
     return res,pags
 
@@ -1934,8 +1946,11 @@ def scrape_supercasa(perfil):
                 return its
             items,p=paginar_scraperapi(tpl,parse)
             if not items:
-                log.info(f"    Proxy 0 items — a tentar Playwright ({tl} {zl})...")
-                items,p=paginar_playwright(tpl,parse,f"{tl} {zl}")
+                # Portais grandes bloqueiam sempre Playwright de datacenter — não tentar
+                _no_pw = ["idealista","imovirtual","casa.sapo","supercasa","sapo.pt"]
+                if not any(x in tpl.lower() for x in _no_pw):
+                    log.info(f"    Proxy 0 items — a tentar Playwright ({tl} {zl})...")
+                    items,p=paginar_playwright(tpl,parse,f"{tl} {zl}")
             res.extend(items); pags+=p
     return res,pags
 
