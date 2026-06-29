@@ -17,6 +17,8 @@ import os, re, time, json, random, logging, smtplib, schedule, threading
 from urllib.parse import urljoin
 import hashlib, secrets, functools
 import requests
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import psycopg
 from psycopg import rows as psycopg_rows
 from datetime import datetime, timedelta
@@ -286,6 +288,12 @@ _provider_data = {p: {
     "circuit_half_open": False,
 } for p in _PROVIDERS}
 
+# Semáforos de concorrência por provider (respeita max_parallel do providers.json)
+_provider_semaphores = {
+    p: threading.Semaphore(PROVIDER_CONFIG.get(p, {}).get("max_parallel", 5))
+    for p in _PROVIDERS
+}
+
 # Per-domain stats: domain -> provider -> {success, total, latencies}
 _domain_stats = _dd(lambda: _dd(lambda: {"success":0,"total":0,"latencies":[]}))
 
@@ -306,7 +314,7 @@ EXHAUSTED_PATTERNS = [
     ("scrapedo",    ["Monthly request limit exceeded"]),
     ("crawlbase",   ["Token is invalid", "exhausted the free tier", "Add Billing"]),
     ("scraperapi",  ["out of API credits"]),
-    ("scrapingant", ["credit", "limit reached", "quota", "insufficient credits"]),
+    ("scrapingant", ["credit", "limit reached", "quota", "insufficient credits", "concurrency limit"]),
 ]
 
 def _record_provider(provider, success, latency_ms=0, error=None, domain=None):
@@ -590,13 +598,14 @@ def proxied_get(url, render=True, **kwargs):
             return requests.get(api, timeout=60, headers=random_headers())
 
         elif proxy == "scrapingant":
-            # ScrapingAnt — JS rendering
-            params = {
-                "url": url, "x-api-key": SCRAPINGANT_KEY,
-                "browser": "true" if render else "false",
-            }
-            result = requests.get("https://api.scrapingant.com/v2/general",
-                params=params, timeout=60)
+            # ScrapingAnt — JS rendering (free tier: 1 concurrent request)
+            with _provider_semaphores["scrapingant"]:
+                params = {
+                    "url": url, "x-api-key": SCRAPINGANT_KEY,
+                    "browser": "true" if render else "false",
+                }
+                result = requests.get("https://api.scrapingant.com/v2/general",
+                    params=params, timeout=60)
 
         elif proxy == "scrapedo":
             # Scrape.do — suporta JS com &render=true

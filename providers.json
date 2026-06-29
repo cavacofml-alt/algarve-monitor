@@ -6,7 +6,8 @@
       "cost_weight": 0.1,
       "supports_js": true,
       "supports_cloudflare": false,
-      "max_parallel": 5
+      "max_parallel": 1,
+      "note": "free tier: 1 concurrent request"
     },
     "scraperapi": {
       "priority": 2,
