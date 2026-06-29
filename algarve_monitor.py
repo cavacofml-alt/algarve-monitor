@@ -145,8 +145,22 @@ def random_headers():
             "Accept": "text/html,application/xhtml+xml,*/*;q=0.8"}
 
 _proxy_counter = 0
-_proxy_stats = {}  # provider -> success count
-_proxy_exhausted = {}  # provider -> datetime quando esgotou
+
+# ── Provider metrics ──────────────────────────────────────────
+from datetime import datetime as _dt, date as _date
+
+_PROVIDERS = ["zenrows","scrapingbee","scrapedo","crawlbase","scraperapi","playwright","direto"]
+_provider_data = {p: {
+    "requests_today": 0, "success_today": 0,
+    "latencies": [], "last_error": None,
+    "exhausted_at": None, "cooldown_until": None,
+} for p in _PROVIDERS}
+_proxy_stats    = {}  # legacy compat
+_proxy_exhausted = {} # legacy compat
+_proxy_success  = {}
+_proxy_fail     = {}
+_proxy_time     = {}
+_proxy_cooldown = {}
 
 EXHAUSTED_PATTERNS = [
     ("zenrows",     ["exhausted the API Credits", "upgrade your subscription"]),
@@ -156,27 +170,57 @@ EXHAUSTED_PATTERNS = [
     ("scraperapi",  ["out of API credits"]),
 ]
 
+def _record_provider(provider, success, latency_ms=0, error=None):
+    d = _provider_data.get(provider)
+    if not d: return
+    d["requests_today"] += 1
+    if success: d["success_today"] += 1
+    if latency_ms: d["latencies"] = (d["latencies"] + [latency_ms])[-50:]
+    if error: d["last_error"] = error
+    _proxy_stats[provider] = _proxy_stats.get(provider, 0) + (1 if success else 0)
+
 def _is_exhausted(provider):
-    if provider not in _proxy_exhausted: return False
-    from datetime import datetime
-    exhausted_at = _proxy_exhausted[provider]
-    now = datetime.now()
-    if now.month != exhausted_at.month or now.year != exhausted_at.year:
+    d = _provider_data.get(provider, {})
+    until = d.get("cooldown_until")
+    if not until: return False
+    if _date.today() >= until:
+        d["cooldown_until"] = None; d["exhausted_at"] = None
+        log.info(f"  ✅ {provider} resetou — novo ciclo")
         del _proxy_exhausted[provider]
-        log.info(f"  ✅ {provider} resetou — novo ciclo mensal")
         return False
     return True
 
 def _mark_exhausted(provider, msg=""):
-    from datetime import datetime
-    if provider not in _proxy_exhausted:
-        next_m = datetime.now().month % 12 + 1
-        log.warning(f"  🔴 {provider} ESGOTADO — cooldown até 1/{next_m} | {msg[:60]}")
-        _proxy_exhausted[provider] = datetime.now()
-_proxy_success = {}
-_proxy_fail = {}
-_proxy_time = {}
-_proxy_cooldown = {}  # timestamp until which proxy is in cooldown
+    d = _provider_data.get(provider, {})
+    if d.get("cooldown_until"): return
+    today = _date.today()
+    until = _date(today.year + (1 if today.month==12 else 0),
+                  today.month % 12 + 1, 1)
+    d["exhausted_at"]   = _dt.now().isoformat()
+    d["cooldown_until"] = until
+    d["last_error"]     = "quota_exceeded"
+    _proxy_exhausted[provider] = _dt.now()
+    log.warning(f"  🔴 {provider} ESGOTADO — cooldown até {until} | {msg[:60]}")
+
+def provider_status_dict():
+    out = {}
+    for p in _PROVIDERS:
+        d   = _provider_data[p]
+        req = d["requests_today"]
+        suc = d["success_today"]
+        lat = d["latencies"]
+        until = d.get("cooldown_until")
+        out[p] = {
+            "provider":       p,
+            "status":         "cooldown" if (until and _date.today() < until)
+                              else ("active" if req > 0 else "idle"),
+            "cooldown_until": str(until) if until else None,
+            "requests_today": req,
+            "success_rate":   round(suc/req*100, 1) if req else None,
+            "avg_latency_ms": round(sum(lat)/len(lat)) if lat else None,
+            "last_error":     d["last_error"],
+        }
+    return out
 
 PROXY_COOLDOWN_SECONDS = 300  # 5 min cooldown after failures
 
@@ -2931,20 +2975,54 @@ def api_apagar_imovel():
 @app.route("/api/provider_status")
 @login_required
 def api_provider_status():
-    """Estado atual dos providers e métricas por scraper."""
-    from datetime import datetime
-    providers = {}
-    for prov in ["zenrows","scrapingbee","scrapedo","crawlbase","scraperapi"]:
-        exhausted = prov in _proxy_exhausted
-        providers[prov] = {
-            "esgotado": exhausted,
-            "desde": _proxy_exhausted[prov].strftime("%H:%M") if exhausted else None,
-            "sucesso": _proxy_stats.get(prov, 0)
-        }
+    """Estado completo dos providers com métricas."""
+    return jsonify(provider_status_dict())
+
+@app.route("/api/system_health")
+@login_required
+def api_system_health():
+    """Health check geral do sistema — ideal para dashboards e alertas."""
+    metrics = _scraper_metrics
+    total   = len(SCRAPERS)
+    healthy = sum(1 for m in metrics.values() if m.get("status")=="ok")
+    warning = sum(1 for m in metrics.values() if m.get("status")=="vazio")
+    error   = sum(1 for m in metrics.values() if m.get("status")=="erro")
+    providers = provider_status_dict()
+    active_p  = sum(1 for p in providers.values() if p["status"]!="cooldown")
+    cooldown_p= sum(1 for p in providers.values() if p["status"]=="cooldown")
+    # Last run info from DB
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM imoveis WHERE disponivel=TRUE")
+                total_props = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM imoveis WHERE criado_em > NOW()-INTERVAL '24 hours'")
+                new_24h = cur.fetchone()[0]
+    except: total_props = new_24h = 0
+    total_ms  = sum(m.get("ms",0) for m in metrics.values())
+    total_items = sum(m.get("items",0) for m in metrics.values())
     return jsonify({
-        "providers": providers,
-        "scrapers": _scraper_metrics,
-        "exhausted_count": len(_proxy_exhausted)
+        "scrapers": {
+            "total": total, "healthy": healthy,
+            "warning": warning, "error": error,
+            "ran": len(metrics),
+        },
+        "providers": {
+            "active": active_p, "cooldown": cooldown_p,
+            "detail": providers,
+        },
+        "last_run": {
+            "duration_seconds": round(total_ms/1000),
+            "properties_found": total_items,
+            "new_properties": new_24h,
+            "total_in_db": total_props,
+        },
+        "notifications": {
+            "telegram": bool(os.getenv("TELEGRAM_TOKEN")),
+            "discord":  bool(os.getenv("DISCORD_WEBHOOK")),
+            "email":    bool(os.getenv("RESEND_API_KEY") or os.getenv("EMAIL_REMETENTE")),
+            "webhook":  bool(os.getenv("WEBHOOK_URL")),
+        }
     })
 
 @app.route("/api/saude")
