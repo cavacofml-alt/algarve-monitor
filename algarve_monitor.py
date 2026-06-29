@@ -1684,11 +1684,8 @@ def paginar_scraperapi(url_tpl, parse_fn):
                 return []  # ScrapingAnt busy — silencioso, não é erro
             if len(r.text) < 500:
                 msg = r.text[:150]
-                # Só loga a primeira vez que um provider fica bloqueado
-                if not _is_exhausted(proxy):
-                    log.warning(f"    proxy resposta bloqueada ({len(r.text)} chars): {msg}")
-                else:
-                    log.debug(f"    {proxy} já esgotado — a saltar")
+                # Loga resposta bloqueada (proxy identificado pelo padrão da mensagem)
+                log.warning(f"    proxy resposta bloqueada ({len(r.text)} chars): {msg}")
                 # Verifica se é quota mensal esgotada
                 for prov, patterns in EXHAUSTED_PATTERNS:
                     if any(p.lower() in msg.lower() for p in patterns):
