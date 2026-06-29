@@ -591,6 +591,10 @@ def proxied_get(url, render=True, **kwargs):
 
     t0 = time.time()
     try:
+        # Re-verifica se proxy ainda está válido (pode ter sido marcado entre tentativas)
+        if _is_exhausted(proxy):
+            log.debug(f"  {proxy} ficou esgotado — a tentar direto")
+            raise Exception(f"{proxy} exhausted during run")
         if proxy == "scraperapi":
             rp = "&render=true&wait=3000" if render else ""
             api = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={requests.utils.quote(url)}{rp}"
@@ -1709,7 +1713,12 @@ def paginar_scraperapi(url_tpl, parse_fn):
                 for prov, patterns in EXHAUSTED_PATTERNS:
                     if any(p.lower() in msg.lower() for p in patterns):
                         _mark_exhausted(prov, msg)
-                        break
+                        # Retorna resposta vazia imediatamente — não tenta mais este provider
+                        empty = requests.models.Response()
+                        empty.status_code = 429
+                        empty._content = b""
+                        return empty
+                    break
                 else:
                     # Verifica se é erro temporário (concorrência/rate limit)
                     for prov, patterns in TRANSIENT_PATTERNS:
