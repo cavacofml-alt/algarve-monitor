@@ -721,7 +721,18 @@ def init_db():
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS imoveis (
+                CREATE TABLE IF NOT EXISTS scraper_stats (
+                nome            TEXT PRIMARY KEY,
+                total_runs      INTEGER DEFAULT 0,
+                success_runs    INTEGER DEFAULT 0,
+                consecutive_zeros INTEGER DEFAULT 0,
+                last_items      INTEGER DEFAULT 0,
+                last_run_ts     TIMESTAMPTZ,
+                broken          BOOLEAN DEFAULT FALSE,
+                broken_since    TIMESTAMPTZ,
+                priority_boost  REAL DEFAULT 0.0
+            );
+            CREATE TABLE IF NOT EXISTS imoveis (
                     id              TEXT PRIMARY KEY,
                     perfil_nome     TEXT NOT NULL,
                     titulo          TEXT,
@@ -818,6 +829,57 @@ def init_db():
             """)
         conn.commit()
     log.info("Base de dados v4 inicializada.")
+
+def _load_broken_scrapers():
+    """Carrega scrapers marcados como broken da BD."""
+    broken = set()
+    try:
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT nome FROM scraper_stats WHERE broken=TRUE").fetchall()
+            broken = {r["nome"] for r in rows}
+            if broken:
+                log.info(f"  Scrapers em pausa (broken): {broken}")
+    except Exception as e:
+        log.debug(f"load_broken_scrapers: {e}")
+    return broken
+
+_broken_scrapers = set()  # carregado em verificar()
+
+def _update_scraper_stat(nome, items):
+    """Actualiza métricas persistentes de um scraper após cada ronda."""
+    try:
+        with get_db() as conn:
+            existing = conn.execute(
+                "SELECT * FROM scraper_stats WHERE nome=%s", (nome,)).fetchone()
+            if not existing:
+                conn.execute("""INSERT INTO scraper_stats
+                    (nome,total_runs,success_runs,consecutive_zeros,last_items,last_run_ts)
+                    VALUES (%s,1,%s,%s,%s,NOW())""",
+                    (nome, 1 if items>0 else 0, 0 if items>0 else 1, items))
+            else:
+                consec = 0 if items > 0 else (existing["consecutive_zeros"] or 0) + 1
+                broken = consec >= 10  # 10 rondas seguidas a 0 = broken
+                broken_since = existing["broken_since"]
+                if broken and not existing["broken"]:
+                    broken_since = "NOW()"
+                    log.warning(f"  🔴 {nome} marcado BROKEN ({consec} rondas a zero)")
+                elif not broken:
+                    broken_since = None
+                conn.execute("""UPDATE scraper_stats SET
+                    total_runs=total_runs+1,
+                    success_runs=success_runs+%s,
+                    consecutive_zeros=%s,
+                    last_items=%s,
+                    last_run_ts=NOW(),
+                    broken=%s,
+                    broken_since=COALESCE(%s::TIMESTAMPTZ, broken_since)
+                    WHERE nome=%s""",
+                    (1 if items>0 else 0, consec, items,
+                     broken, "NOW()" if broken and not existing["broken"] else None,
+                     nome))
+    except Exception as e:
+        log.debug(f"_update_scraper_stat {nome}: {e}")
 
 def get_perfis_db():
     """Lê perfis da base de dados. Se não houver, usa os do código."""
@@ -1167,9 +1229,11 @@ def verificar_scrapers_com_falha():
         msg["To"]   = EMAIL_DESTINATARIO
         msg.attach(MIMEText(f"<pre>{linhas}</pre>","html"))
         try:
-            with smtplib.SMTP_SSL("smtp.gmail.com",465) as smtp:
-                smtp.login(EMAIL_REMETENTE, EMAIL_PASSWORD)
-                smtp.sendmail(EMAIL_REMETENTE, EMAIL_DESTINATARIO, msg.as_string())
+            ok, motivo = _send_via_resend("assunto", "html", EMAIL_DESTINATARIO)
+            if ok:
+                log.info("✉  Email enviado via Resend")
+            else:
+                log.error(f"Email alerta falha: {motivo}")
             log.warning(f"⚠️  Alerta de scrapers com falha enviado.")
         except Exception as e:
             log.error(f"Email alerta falha: {e}")
@@ -2651,6 +2715,25 @@ def card_email(im, badge="NOVO", cor="#16a34a"):
       </div>
     </div>"""
 
+def _send_via_resend(assunto, html, destinatario):
+    """Envia via Resend API — não usa SMTP (Railway bloqueia portas 465/587)."""
+    key = os.getenv("RESEND_API_KEY","")
+    remetente = os.getenv("EMAIL_REMETENTE","monitor@algarve-imoveis.pt")
+    if not key:
+        return False, "RESEND_API_KEY não configurada"
+    try:
+        r = requests.post("https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {key}",
+                     "Content-Type": "application/json"},
+            json={"from": remetente, "to": [destinatario],
+                  "subject": assunto, "html": html},
+            timeout=15)
+        if r.status_code in (200,201,202):
+            return True, "ok"
+        return False, f"HTTP {r.status_code}: {r.text[:80]}"
+    except Exception as e:
+        return False, str(e)
+
 def enviar_email(perfil, novos, baixas, reativados):
     if not novos and not baixas and not reativados: return
     partes=[]
@@ -2677,15 +2760,11 @@ def enviar_email(perfil, novos, baixas, reativados):
           {datetime.now().strftime('%d/%m/%Y %H:%M')}
         </p>
       </div></body></html>"""
-    msg=MIMEMultipart("alternative")
-    msg["Subject"]=assunto; msg["From"]=EMAIL_REMETENTE; msg["To"]=perfil["email"]
-    msg.attach(MIMEText(html,"html"))
-    try:
-        with smtplib.SMTP_SSL("smtp.gmail.com",465) as smtp:
-            smtp.login(EMAIL_REMETENTE,EMAIL_PASSWORD)
-            smtp.sendmail(EMAIL_REMETENTE,perfil["email"],msg.as_string())
+    ok, motivo = _send_via_resend(assunto, html, perfil["email"])
+    if ok:
         log.info(f"✉  Email → {perfil['email']}")
-    except Exception as e: log.error(f"Email: {e}")
+    else:
+        log.error(f"Email alerta falha: {motivo}")
 
 def enviar_resumo_semanal():
     for perfil in PERFIS:
@@ -2743,7 +2822,11 @@ def verificar_perfil(perfil):
 
     # Corre scrapers em paralelo com ThreadPoolExecutor
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    args = [(nome, fn, perfil) for nome, fn in SCRAPERS]
+    args = [(nome, fn, perfil) for nome, fn in SCRAPERS
+             if nome not in _broken_scrapers]
+    if len(args) < len(SCRAPERS):
+        skipped = len(SCRAPERS) - len(args)
+        log.info(f"  ⏭ {skipped} scrapers em pausa (broken) — a saltar")
     
     with ThreadPoolExecutor(max_workers=6) as executor:
         futures = {executor.submit(correr_scraper, a): a[0] for a in args}
@@ -2874,9 +2957,11 @@ def verificar():
                     <p>Sem ZenRows nem ScrapingBee configurados.</p>
                     <p>O monitor está <b>pausado</b> até ao reset mensal (dia 1).</p>
                     </body></html>""", "html"))
-                    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-                        smtp.login(EMAIL_REMETENTE, EMAIL_PASSWORD)
-                        smtp.sendmail(EMAIL_REMETENTE, EMAIL_DESTINATARIO, msg.as_string())
+                    ok, motivo = _send_via_resend("assunto", "html", EMAIL_DESTINATARIO)
+                    if ok:
+                        log.info("✉  Email enviado via Resend")
+                    else:
+                        log.error(f"Email alerta falha: {motivo}")
                 except Exception as e:
                     log.error(f"Email aviso créditos: {e}")
                 return
@@ -2897,9 +2982,11 @@ def verificar():
                 <p>Usados: <b>{used}/{limit}</b> ({pct}%)</p>
                 <p>A continuar com ZenRows e ScrapingBee como backup.</p>
                 </body></html>""", "html"))
-                with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-                    smtp.login(EMAIL_REMETENTE, EMAIL_PASSWORD)
-                    smtp.sendmail(EMAIL_REMETENTE, EMAIL_DESTINATARIO, msg.as_string())
+                ok, motivo = _send_via_resend("assunto", "html", EMAIL_DESTINATARIO)
+                if ok:
+                    log.info("✉  Email enviado via Resend")
+                else:
+                    log.error(f"Email alerta falha: {motivo}")
                 log.info("Alerta 80% enviado por email.")
             except Exception as e:
                 log.error(f"Email alerta 80%: {e}")
@@ -3281,9 +3368,11 @@ def api_teste_email():
         <p>O Monitor de Imóveis está configurado corretamente.</p>
         <p style="color:#888;font-size:12px">{datetime.now().strftime('%d/%m/%Y %H:%M')}</p>
         </body></html>""", "html"))
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-            smtp.login(EMAIL_REMETENTE, EMAIL_PASSWORD)
-            smtp.sendmail(EMAIL_REMETENTE, email_dest, msg.as_string())
+        ok, motivo = _send_via_resend("assunto", "html", email_dest)
+        if ok:
+            log.info("✉  Email enviado via Resend")
+        else:
+            log.error(f"Email alerta falha: {motivo}")
         return jsonify({"ok":True})
     except Exception as e:
         return jsonify({"erro":str(e)}),500
@@ -3315,9 +3404,11 @@ def verificar_limite_scraperapi():
             <p>Usados: <b>{used}/{limit}</b> pedidos ({pct}%)</p>
             <p>Considera fazer upgrade em <a href="https://scraperapi.com">scraperapi.com</a></p>
             </body></html>""", "html"))
-            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-                smtp.login(EMAIL_REMETENTE, EMAIL_PASSWORD)
-                smtp.sendmail(EMAIL_REMETENTE, EMAIL_DESTINATARIO, msg.as_string())
+            ok, motivo = _send_via_resend("assunto", "html", EMAIL_DESTINATARIO)
+            if ok:
+                log.info("✉  Email enviado via Resend")
+            else:
+                log.error(f"Email alerta falha: {motivo}")
             log.warning(f"⚠️ Alerta ScraperAPI enviado ({pct}%)")
         return {"used": used, "limit": limit, "pct": pct}
     except Exception as e:
