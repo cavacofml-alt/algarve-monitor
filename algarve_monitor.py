@@ -2806,8 +2806,9 @@ def _preflight_providers():
                     if p == prov and any(pat.lower() in msg.lower() for pat in patterns):
                         _mark_exhausted(prov, msg)
                         break
-                else:
-                    log.info(f"    {prov}: ⚠️  resposta pequena ({len(r.text)} chars)")
+                    # Pequena resposta = provider bloqueado/esgotado
+                    log.warning(f"    {prov}: ⚠️ resposta suspeita ({len(r.text)} chars) — a marcar esgotado")
+                    _mark_exhausted(prov, f"preflight suspeito ({len(r.text)} chars)")
             else:
                 log.info(f"    {prov}: ✅ OK ({r.status_code})")
         except Exception as e:
