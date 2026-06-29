@@ -557,7 +557,8 @@ def proxied_get(url, render=True, **kwargs):
             scores[p] = f"{s:.2f}(c={c:.1f},n={n})"
         log.debug(f"Scores [{_domain}]: {scores}")
     _proxy_counter += 1
-    log.debug(f"Proxy: {proxy} [{_proxy_counter}] render={render} taxa={taxa_sucesso(proxy):.0%}")
+    score, conf, n = _domain_provider_score(_domain, proxy)
+    log.debug(f"Proxy: {proxy} [{_proxy_counter}] render={render} score={score:.2f}(conf={conf:.1f},n={n})")
 
     t0 = time.time()
     try:
