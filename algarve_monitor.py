@@ -259,17 +259,33 @@ def _load_provider_config():
 
 PROVIDER_CONFIG = _load_provider_config()
 _PROVIDERS = list(PROVIDER_CONFIG.keys())
+_PROVIDERS = list(PROVIDER_CONFIG.keys())
+from collections import defaultdict as _dd
+
+# Global stats per provider
 _provider_data = {p: {
     "requests_today": 0, "success_today": 0,
     "latencies": [], "last_error": None,
     "exhausted_at": None, "cooldown_until": None,
+    "consecutive_failures": 0,
+    "circuit_open": False,
+    "circuit_open_until": None,
+    "circuit_half_open": False,
 } for p in _PROVIDERS}
-_proxy_stats    = {}  # legacy compat
-_proxy_exhausted = {} # legacy compat
+
+# Per-domain stats: domain -> provider -> {success, total, latencies}
+_domain_stats = _dd(lambda: _dd(lambda: {"success":0,"total":0,"latencies":[]}))
+
+_proxy_stats    = {}
+_proxy_exhausted = {}
 _proxy_success  = {}
 _proxy_fail     = {}
 _proxy_time     = {}
 _proxy_cooldown = {}
+
+CIRCUIT_FAIL_THRESHOLD = 5
+CIRCUIT_OPEN_SECONDS   = 1800  # 30 min
+CIRCUIT_HALF_OPEN_WAIT = 60    # 1 min antes de testar
 
 EXHAUSTED_PATTERNS = [
     ("zenrows",     ["exhausted the API Credits", "upgrade your subscription"]),
@@ -280,23 +296,101 @@ EXHAUSTED_PATTERNS = [
     ("scrapingant", ["credit", "limit reached", "quota", "insufficient credits"]),
 ]
 
-def _record_provider(provider, success, latency_ms=0, error=None):
+def _record_provider(provider, success, latency_ms=0, error=None, domain=None):
+    """Regista resultado de um pedido — actualiza stats globais e por domínio."""
     d = _provider_data.get(provider)
     if not d: return
+
     d["requests_today"] += 1
-    if success: d["success_today"] += 1
-    if latency_ms: d["latencies"] = (d["latencies"] + [latency_ms])[-50:]
-    if error: d["last_error"] = error
+    if success:
+        d["success_today"] += 1
+        d["consecutive_failures"] = 0  # reset circuit breaker
+        if d.get("circuit_half_open"):
+            # Sucesso no teste — fecha o circuit breaker
+            d["circuit_open"] = False
+            d["circuit_half_open"] = False
+            d["circuit_open_until"] = None
+            log.info(f"  ✅ Circuit breaker fechado: {provider}")
+    else:
+        d["consecutive_failures"] = d.get("consecutive_failures", 0) + 1
+        if error: d["last_error"] = error
+        if d["consecutive_failures"] >= CIRCUIT_FAIL_THRESHOLD and not d.get("circuit_open"):
+            until = _dt.now().timestamp() + CIRCUIT_OPEN_SECONDS
+            d["circuit_open"] = True
+            d["circuit_open_until"] = until
+            d["circuit_half_open"] = False
+            log.warning(f"  ⚡ Circuit breaker ABERTO: {provider} "
+                        f"({d['consecutive_failures']} falhas) — pausa 30min")
+
+    if latency_ms: d["latencies"] = (d["latencies"] + [latency_ms])[-100:]
     _proxy_stats[provider] = _proxy_stats.get(provider, 0) + (1 if success else 0)
 
+    # Per-domain stats
+    if domain:
+        ds = _domain_stats[domain][provider]
+        ds["total"] += 1
+        if success: ds["success"] += 1
+        if latency_ms: ds["latencies"] = (ds["latencies"] + [latency_ms])[-20:]
+
+def _circuit_allows(provider):
+    """Verifica se o circuit breaker permite usar este provider."""
+    d = _provider_data.get(provider, {})
+    if not d.get("circuit_open"): return True
+    until = d.get("circuit_open_until", 0)
+    now   = _dt.now().timestamp()
+    if now >= until:
+        # Passa para half-open: testa 1 pedido
+        d["circuit_half_open"] = True
+        d["circuit_open"] = False
+        log.info(f"  ⚡ Circuit breaker HALF-OPEN: {provider} — a testar 1 pedido")
+        return True
+    # Ainda aberto
+    remaining = int((until - now) / 60)
+    log.debug(f"  ⚡ Circuit breaker aberto: {provider} — {remaining}min restantes")
+    return False
+
+def _domain_provider_score(domain, provider):
+    """Score de um provider para um domínio específico (com confiança)."""
+    ds  = _domain_stats[domain][provider]
+    total   = ds["total"]
+    success = ds["success"]
+    lats    = ds["latencies"]
+    cfg     = PROVIDER_CONFIG.get(provider, {})
+
+    # Confiança: mais amostras = mais confiança (até 1.0 com 50+ amostras)
+    confidence = min(1.0, total / 50)
+
+    if total < 3:
+        # Pouca história — usa score global com confiança baixa
+        d_global = _provider_data.get(provider, {})
+        req_g = d_global.get("requests_today", 0)
+        suc_g = d_global.get("success_today", 0)
+        sr = (suc_g / req_g) if req_g >= 3 else 0.75
+        base_priority = 1 - (cfg.get("priority", 5) / 10)
+        return (sr * 0.5 + base_priority * 0.5), 0.1, total
+
+    sr  = success / total
+    avg_lat = sum(lats)/len(lats) if lats else 3000
+    speed   = min(1.0, 2000 / avg_lat)
+    cost    = cfg.get("cost_weight", 0.2)
+    headroom = max(0.1, 1 - ds["total"] / max(cfg.get("monthly_limit",1000), 1))
+
+    score = (sr * 0.6 + speed * 0.3 - cost * 0.1) * headroom
+    return score, confidence, total
+
 def _is_exhausted(provider):
+    """Verifica cooldown mensal OU circuit breaker aberto."""
+    # Circuit breaker
+    if not _circuit_allows(provider):
+        return True
+    # Cooldown mensal (créditos esgotados)
     d = _provider_data.get(provider, {})
     until = d.get("cooldown_until")
     if not until: return False
     if _date.today() >= until:
         d["cooldown_until"] = None; d["exhausted_at"] = None
+        if provider in _proxy_exhausted: del _proxy_exhausted[provider]
         log.info(f"  ✅ {provider} resetou — novo ciclo")
-        del _proxy_exhausted[provider]
         return False
     return True
 
@@ -432,31 +526,23 @@ def proxied_get(url, render=True, **kwargs):
         # All in cooldown — use the one with least cooldown time
         proxies_ativos_now = sorted(proxies, key=lambda p: _proxy_cooldown.get(p, 0))[:1]
 
-    # Score automático: success_rate * 0.6 + speed * 0.3 - cost * 0.1
+    # Score por domínio × provider (com confiança)
+    from urllib.parse import urlparse as _up
+    _domain = _up(url).netloc.replace("www.","")
+
     def provider_score(p):
-        d    = _provider_data.get(p, {})
-        req  = d.get("requests_today", 0)
-        suc  = d.get("success_today", 0)
-        lats = d.get("latencies", [])
-        cfg  = PROVIDER_CONFIG.get(p, {})
-
-        success_rate = (suc / req) if req >= 3 else 0.75  # neutral se pouca história
-        speed_score  = min(1.0, 2000 / max(avg_lat, 100)) if (avg_lat := (sum(lats)/len(lats) if lats else 2000)) else 0.5
-        cost_weight  = cfg.get("cost_weight", 0.2)
-        # Penaliza providers próximos do limite mensal
-        limit     = cfg.get("monthly_limit", 1000)
-        used      = req
-        headroom  = max(0, 1 - used / max(limit, 1))
-
-        score = (success_rate * 0.6 + speed_score * 0.3 - cost_weight * 0.1) * headroom
+        score, conf, samples = _domain_provider_score(_domain, p)
         return score
 
     proxies_ativos_now.sort(key=provider_score, reverse=True)
-    # Log scores para debug
+    proxy = proxies_ativos_now[0]
+
     if log.isEnabledFor(logging.DEBUG):
-        scores = {p: round(provider_score(p)*100) for p in proxies_ativos_now}
-        log.debug(f"Provider scores: {scores}")
-    proxy = proxies_ativos_now[0]  # sempre o melhor
+        scores = {}
+        for p in proxies_ativos_now:
+            s, c, n = _domain_provider_score(_domain, p)
+            scores[p] = f"{s:.2f}(c={c:.1f},n={n})"
+        log.debug(f"Scores [{_domain}]: {scores}")
     _proxy_counter += 1
     log.debug(f"Proxy: {proxy} [{_proxy_counter}] render={render} taxa={taxa_sucesso(proxy):.0%}")
 
@@ -504,9 +590,12 @@ def proxied_get(url, render=True, **kwargs):
             api = f"https://api.scrape.do?token={SCRAPEDO_KEY}&url={requests.utils.quote(url)}{rp}"
             result = requests.get(api, timeout=60, headers=random_headers())
 
+        _record_provider(proxy, True, int((time.time()-t0)*1000), domain=_domain)
         registar_proxy_resultado(proxy, True, int((time.time()-t0)*1000))
         return result
     except Exception as e:
+        _record_provider(proxy, False, int((time.time()-t0)*1000),
+                        error=str(e), domain=_domain)
         registar_proxy_resultado(proxy, False, int((time.time()-t0)*1000))
         log.warning(f"Proxy {proxy} falhou: {e} — a tentar direto")
 
@@ -3138,8 +3227,41 @@ def api_apagar_imovel():
 @app.route("/api/provider_status")
 @login_required
 def api_provider_status():
-    """Estado completo dos providers com métricas."""
-    return jsonify(provider_status_dict())
+    """Estado completo dos providers com métricas e circuit breaker."""
+    result = provider_status_dict()
+    # Add circuit breaker state
+    for p, d in result.items():
+        pd = _provider_data.get(p, {})
+        d["circuit_open"]    = pd.get("circuit_open", False)
+        d["consecutive_failures"] = pd.get("consecutive_failures", 0)
+        if pd.get("circuit_open_until"):
+            remaining = max(0, int((pd["circuit_open_until"] - _dt.now().timestamp())/60))
+            d["circuit_open_minutes_remaining"] = remaining
+    return jsonify(result)
+
+@app.route("/api/domain_stats")
+@login_required
+def api_domain_stats():
+    """Estatísticas por domínio × provider."""
+    out = {}
+    for domain, providers in _domain_stats.items():
+        out[domain] = {}
+        for provider, stats in providers.items():
+            total = stats["total"]
+            if total == 0: continue
+            suc  = stats["success"]
+            lats = stats["latencies"]
+            conf = min(1.0, total / 50)
+            out[domain][provider] = {
+                "success_rate": round(suc/total*100, 1),
+                "total":        total,
+                "confidence":   round(conf, 2),
+                "avg_latency_ms": round(sum(lats)/len(lats)) if lats else None,
+            }
+        # Sort by success_rate
+        out[domain] = dict(sorted(out[domain].items(),
+            key=lambda x: x[1]["success_rate"], reverse=True))
+    return jsonify(out)
 
 @app.route("/api/system_health")
 @login_required
