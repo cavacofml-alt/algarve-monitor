@@ -2925,6 +2925,7 @@ def verificar_creditos_scraperapi():
         return None
 
 _preflight_done = False
+_preflight_lock = threading.Lock()
 
 def _preflight_providers():
     """Testa cada provider ANTES de lançar scrapers em paralelo.
