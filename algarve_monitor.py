@@ -607,14 +607,20 @@ def proxied_get(url, render=True, **kwargs):
             return requests.get(api, timeout=60, headers=random_headers())
 
         elif proxy == "scrapingant":
-            # ScrapingAnt — JS rendering (free tier: 1 concurrent request)
-            with _provider_semaphores["scrapingant"]:
+            # ScrapingAnt — tenta adquirir semáforo; se ocupado, salta para próximo provider
+            acquired = _provider_semaphores["scrapingant"].acquire(timeout=2)
+            if not acquired:
+                log.debug("ScrapingAnt ocupado — a saltar para próximo provider")
+                raise Exception("ScrapingAnt busy, skip")
+            try:
                 params = {
                     "url": url, "x-api-key": SCRAPINGANT_KEY,
                     "browser": "true" if render else "false",
                 }
                 result = requests.get("https://api.scrapingant.com/v2/general",
-                    params=params, timeout=60)
+                    params=params, timeout=30)
+            finally:
+                _provider_semaphores["scrapingant"].release()
 
         elif proxy == "scrapedo":
             # Scrape.do — suporta JS com &render=true
@@ -2343,28 +2349,28 @@ def scrape_boto(p):
     return scrape_playwright_html(
         "Boto Properties",
         "https://www.botoproperties.com/imoveis",
-        "[class*='property']", "Barlavento", p
+        "a[href*='/imovel/']", "Barlavento", p
     )
 
 def scrape_sunpoint(p):
     return scrape_playwright_html(
         "Sunpoint Properties",
         "https://www.sunpoint.pt/propriedades",
-        "[class*='property']", "Barlavento", p
+        "a[href*='/imovel/']", "Barlavento", p
     )
 
 def scrape_algarveuniqueproperties(p):
     return scrape_playwright_html(
         "Algarve Unique Properties",
         "https://www.algarveuniqueproperties.com/imoveis",
-        "[class*='property']", "Algarve", p
+        "a[href*='/imovel/']", "Algarve", p
     )
 
 def scrape_garvetur(p):
     return scrape_playwright_html(
         "Garvetur",
         "https://www.garveturproperties.com/",
-        "[class*='property']", "Algarve", p
+        "a[href*='/detalhes-do-imovel/'],a[href*='/imovel/']", "Algarve", p
     )
 
 def scrape_barraprime(p):
@@ -2378,7 +2384,7 @@ def scrape_mimosaproperties(p):
     return scrape_playwright_html(
         "Mimosa Properties",
         "https://www.mimosaproperties.com/procuro-imovel-mimosaproperties",
-        "li[class]", "Barlavento", p
+        "a[href*='/imovel/']", "Barlavento", p
     )
 
 def scrape_sortami(p):
