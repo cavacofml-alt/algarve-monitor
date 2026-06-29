@@ -145,7 +145,34 @@ def random_headers():
             "Accept": "text/html,application/xhtml+xml,*/*;q=0.8"}
 
 _proxy_counter = 0
-_proxy_stats = {}
+_proxy_stats = {}  # provider -> success count
+_proxy_exhausted = {}  # provider -> datetime quando esgotou
+
+EXHAUSTED_PATTERNS = [
+    ("zenrows",     ["exhausted the API Credits", "upgrade your subscription"]),
+    ("scrapingbee", ["AUTH004", "reached its usage limit"]),
+    ("scrapedo",    ["Monthly request limit exceeded"]),
+    ("crawlbase",   ["Token is invalid", "exhausted the free tier", "Add Billing"]),
+    ("scraperapi",  ["out of API credits"]),
+]
+
+def _is_exhausted(provider):
+    if provider not in _proxy_exhausted: return False
+    from datetime import datetime
+    exhausted_at = _proxy_exhausted[provider]
+    now = datetime.now()
+    if now.month != exhausted_at.month or now.year != exhausted_at.year:
+        del _proxy_exhausted[provider]
+        log.info(f"  ✅ {provider} resetou — novo ciclo mensal")
+        return False
+    return True
+
+def _mark_exhausted(provider, msg=""):
+    from datetime import datetime
+    if provider not in _proxy_exhausted:
+        next_m = datetime.now().month % 12 + 1
+        log.warning(f"  🔴 {provider} ESGOTADO — cooldown até 1/{next_m} | {msg[:60]}")
+        _proxy_exhausted[provider] = datetime.now()
 _proxy_success = {}
 _proxy_fail = {}
 _proxy_time = {}
@@ -1312,11 +1339,15 @@ def paginar_scraperapi(url_tpl, parse_fn):
         url=url_tpl.format(page=pag)
         def _fetch(u=url):
             r=proxied_get(u, render=True)
-            # Debug: log response size to detect blocked responses
+            # Detecta e regista respostas bloqueadas
             if len(r.text) < 500:
-                log.warning(f"    proxy resposta bloqueada ({len(r.text)} chars): {r.text[:150]}")
-            elif len(r.text) < 2000:
-                log.info(f"    proxy resposta pequena ({len(r.text)} chars) — possível erro")
+                msg = r.text[:150]
+                log.warning(f"    proxy resposta bloqueada ({len(r.text)} chars): {msg}")
+                # Marca provider como esgotado se for mensagem de créditos
+                for prov, patterns in EXHAUSTED_PATTERNS:
+                    if any(p.lower() in msg.lower() for p in patterns):
+                        _mark_exhausted(prov, msg)
+                        break
             return parse_fn(r.text)
         try:
             items=com_retry(_fetch)
@@ -2896,6 +2927,25 @@ def api_apagar_imovel():
     except Exception as e:
         log.error(f"api_apagar_imovel: {e}")
         return jsonify({"erro": str(e)}), 500
+
+@app.route("/api/provider_status")
+@login_required
+def api_provider_status():
+    """Estado atual dos providers e métricas por scraper."""
+    from datetime import datetime
+    providers = {}
+    for prov in ["zenrows","scrapingbee","scrapedo","crawlbase","scraperapi"]:
+        exhausted = prov in _proxy_exhausted
+        providers[prov] = {
+            "esgotado": exhausted,
+            "desde": _proxy_exhausted[prov].strftime("%H:%M") if exhausted else None,
+            "sucesso": _proxy_stats.get(prov, 0)
+        }
+    return jsonify({
+        "providers": providers,
+        "scrapers": _scraper_metrics,
+        "exhausted_count": len(_proxy_exhausted)
+    })
 
 @app.route("/api/saude")
 @login_required
