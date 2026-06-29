@@ -80,7 +80,12 @@ _log_buffer = deque(maxlen=500)
 
 class _BufferHandler(logging.Handler):
     def emit(self, record):
-        _log_buffer.append({"ts": record.asctime if hasattr(record,"asctime") else self.formatTime(record,"%d/%m/%Y %H:%M:%S"), "level": record.levelname, "msg": record.getMessage()})
+        from datetime import datetime as _dtnow
+        _log_buffer.append({
+            "ts": _dtnow.now().strftime("%d/%m/%Y %H:%M:%S"),
+            "level": record.levelname,
+            "msg": record.getMessage()
+        })
 _buf = _BufferHandler()
 log.addHandler(_buf)
 
