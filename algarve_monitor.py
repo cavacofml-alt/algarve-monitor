@@ -74,6 +74,16 @@ logging.basicConfig(level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%d/%m/%Y %H:%M:%S")
 log = logging.getLogger("algarve-monitor")
 
+# In-memory log buffer para /api/logs
+from collections import deque
+_log_buffer = deque(maxlen=500)
+
+class _BufferHandler(logging.Handler):
+    def emit(self, record):
+        _log_buffer.append({"ts": record.asctime if hasattr(record,"asctime") else self.formatTime(record,"%d/%m/%Y %H:%M:%S"), "level": record.levelname, "msg": record.getMessage()})
+_buf = _BufferHandler()
+log.addHandler(_buf)
+
 # ============================================================
 # CONFIG
 # ============================================================
@@ -3380,6 +3390,26 @@ def api_domain_stats():
         out[domain] = dict(sorted(out[domain].items(),
             key=lambda x: x[1]["success_rate"], reverse=True))
     return jsonify(out)
+
+@app.route("/api/logs")
+def api_logs():
+    """Endpoint para consulta remota de logs — protegido por API key."""
+    key = request.args.get("key","")
+    if key != os.getenv("LOGS_API_KEY", "algarve2026logs"):
+        return jsonify({"erro": "chave inválida"}), 401
+    n     = int(request.args.get("n", 100))
+    level = request.args.get("level", "").upper()  # INFO, WARNING, ERROR
+    filtro= request.args.get("q", "").lower()       # texto livre
+    logs  = list(_log_buffer)[-n:]
+    if level:
+        logs = [l for l in logs if l["level"] == level]
+    if filtro:
+        logs = [l for l in logs if filtro in l["msg"].lower()]
+    return jsonify({
+        "total": len(_log_buffer),
+        "retornados": len(logs),
+        "logs": logs
+    })
 
 @app.route("/api/system_health")
 @login_required
