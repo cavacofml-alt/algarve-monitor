@@ -457,7 +457,11 @@ def _is_exhausted(provider):
     if not until: return False
     if _date.today() >= until:
         d["cooldown_until"] = None; d["exhausted_at"] = None
+        d["circuit_open"] = False; d["consecutive_failures"] = 0
         if provider in _proxy_exhausted: del _proxy_exhausted[provider]
+        # CRÍTICO: limpar _proxy_cooldown (foi definido como 2099 ao esgotar)
+        if provider in _proxy_cooldown: del _proxy_cooldown[provider]
+        _session_exhausted.discard(provider)
         log.info(f"  ✅ {provider} resetou — novo ciclo")
         return False
     return True
@@ -1377,7 +1381,11 @@ def get_stats():
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM imoveis WHERE disponivel=TRUE"); total=cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM imoveis WHERE criado_em>NOW()-INTERVAL '24 hours'"); ult=cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM historico_precos"); baixas=cur.fetchone()[0]
+            # historico_precos pode não existir em instâncias antigas
+            try:
+                cur.execute("SELECT COUNT(*) FROM historico_precos"); baixas=cur.fetchone()[0]
+            except Exception:
+                conn.rollback(); baixas=0
             cur.execute("SELECT COUNT(*) FROM imoveis WHERE disponivel=FALSE"); rem=cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM imoveis WHERE reativado_em IS NOT NULL"); reat=cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM imoveis WHERE favorito=TRUE"); favs=cur.fetchone()[0]

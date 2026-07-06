@@ -435,10 +435,22 @@ function showTab(name){
 
 // ── CARREGAR DADOS ────────────────────────────────────────
 async function carregar(){
-  const[imoveis,stats]=await Promise.all([
-    fetch('/api/imoveis').then(r=>r.json()),
-    fetch('/api/stats').then(r=>r.json()),
-  ]);
+  let imoveis=[], stats={total:0,ultimas_24h:0,baixas_preco:0,removidos:0,reativados:0,favoritos:0};
+  try {
+    const res = await Promise.all([
+      fetch('/api/imoveis').then(r=>r.json()),
+      fetch('/api/stats').then(r=>r.json()),
+    ]);
+    imoveis = Array.isArray(res[0]) ? res[0] : [];
+    stats   = res[1].erro ? stats : res[1];
+    if(!Array.isArray(res[0]) && res[0].erro){
+      console.error('API imoveis erro:', res[0].erro);
+    }
+  } catch(e) {
+    console.error('Erro ao carregar dados:', e);
+    document.getElementById('loading').textContent='Erro ao carregar. Verifica a consola.';
+    return;
+  }
   todos=imoveis;
   renderStats(stats);
   const zs=[...new Set(imoveis.map(i=>i.zona).filter(Boolean))].sort();
