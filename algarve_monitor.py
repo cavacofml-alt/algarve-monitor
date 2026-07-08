@@ -546,7 +546,8 @@ def registar_proxy_resultado(proxy, sucesso, tempo_ms):
     if len(_proxy_time[proxy]) > 20:
         _proxy_time[proxy] = _proxy_time[proxy][-20:]
 
-def proxied_get(url, render=True, **kwargs):
+def proxied_get(url, render=True, _depth=0, **kwargs):
+    if _depth > 2: return requests.models.Response()  # evita recursão infinita
     """
     Rotação automática entre todos os proxies disponíveis:
     ScraperAPI → ZenRows → ScrapingBee → ScrapingAnt → Crawlbase → Scrape.do → direto
@@ -603,8 +604,21 @@ def proxied_get(url, render=True, **kwargs):
                           and not _is_exhausted(p)
                           and time.time() > _proxy_cooldown.get(p, 0)]
     if not proxies_ativos_now:
-        # All in cooldown — use the one with least cooldown time
-        proxies_ativos_now = sorted(proxies, key=lambda p: _proxy_cooldown.get(p, 0))[:1]
+        # Todos esgotados — usa crawlbase ou direto como último recurso
+        # NUNCA usa providers em _session_exhausted
+        fallback = [p for p in proxies
+                    if p not in _session_exhausted
+                    and p not in ('scrapingant',)]  # evita problemas de concorrência
+        if fallback:
+            proxies_ativos_now = sorted(fallback, key=lambda p: _proxy_cooldown.get(p, 0))[:1]
+        else:
+            # Absolutamente tudo esgotado — tenta direto
+            log.debug("Todos providers esgotados — a usar direto")
+            try:
+                return requests.get(url, headers=random_headers(), timeout=15, verify=False)
+            except Exception:
+                r = requests.models.Response(); r.status_code = 0; r._content = b""
+                return r
 
     # Score por domínio × provider (com confiança)
     from urllib.parse import urlparse as _up
@@ -645,7 +659,7 @@ def proxied_get(url, render=True, **kwargs):
         if proxy == "scraperapi":
             rp = "&render=true&wait=3000" if render else ""
             api = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={requests.utils.quote(url)}{rp}"
-            return requests.get(api, timeout=60, headers=random_headers())
+            result = requests.get(api, timeout=60, headers=random_headers())
 
         elif proxy == "zenrows":
             with _provider_semaphores.get("zenrows", threading.Semaphore(3)):
@@ -662,7 +676,7 @@ def proxied_get(url, render=True, **kwargs):
                 "render_js": "true" if render else "false",
                 "premium_proxy": "true",
             }
-            return requests.get("https://app.scrapingbee.com/api/v1/", params=params, timeout=60)
+            result = requests.get("https://app.scrapingbee.com/api/v1/", params=params, timeout=60)
 
         elif proxy == "crawlbase":
             # Crawlbase — suporta JS com &ajax_wait=true
@@ -705,22 +719,24 @@ def proxied_get(url, render=True, **kwargs):
             result = requests.get(api, timeout=60, headers=random_headers())
 
         ms = int((time.time()-t0)*1000)
-        _record_provider(proxy, True, ms, domain=_domain)
-        registar_proxy_resultado(proxy, True, ms)
-        # Detecta quota esgotada DENTRO do proxied_get — afecta TODOS os callers
-        if result is not None and hasattr(result, 'text') and len(result.text) < 500:
-            msg = result.text[:150]
+        # Detecção de quota AQUI — antes de devolver — afecta TODOS os callers
+        if hasattr(result, 'text') and result.text and len(result.text) < 500:
+            msg = result.text[:200]
             for _prov, _pats in EXHAUSTED_PATTERNS:
                 if _prov == proxy and any(_p.lower() in msg.lower() for _p in _pats):
+                    log.warning(f"    proxy resposta bloqueada ({len(result.text)} chars): {msg[:100]}")
                     _record_provider(proxy, False, ms, error="quota_exceeded", domain=_domain)
                     _mark_exhausted(proxy, msg)
-                    log.debug(f"  proxied_get: {proxy} quota detectada — a tentar direto")
-                    # Tenta direto como fallback imediato
-                    try:
-                        return requests.get(url, headers=random_headers(), timeout=10, verify=False)
-                    except Exception:
-                        pass
-                    return result  # devolve resposta original (caller verá 0 items)
+                    # Tenta próximo provider disponível em vez de devolver resposta inútil
+                    next_providers = [p for p in proxies if p != proxy
+                                      and p not in _session_exhausted
+                                      and not _is_exhausted(p)]
+                    if next_providers:
+                        log.info(f"    a tentar {next_providers[0]} após {proxy} esgotado")
+                        return proxied_get(url, render=render, _depth=kwargs.get('_depth',0)+1)
+                    break
+        _record_provider(proxy, True, ms, domain=_domain)
+        registar_proxy_resultado(proxy, True, ms)
         return result
     except Exception as e:
         _record_provider(proxy, False, int((time.time()-t0)*1000),
@@ -1394,10 +1410,7 @@ def get_stats():
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM imoveis WHERE disponivel=TRUE"); total=cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM imoveis WHERE criado_em>NOW()-INTERVAL '24 hours'"); ult=cur.fetchone()[0]
-            try:
-                cur.execute("SELECT COUNT(*) FROM historico_precos"); baixas=cur.fetchone()[0]
-            except Exception:
-                conn.rollback(); baixas=0
+            cur.execute("SELECT COUNT(*) FROM historico_precos"); baixas=cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM imoveis WHERE disponivel=FALSE"); rem=cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM imoveis WHERE reativado_em IS NOT NULL"); reat=cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM imoveis WHERE favorito=TRUE"); favs=cur.fetchone()[0]
@@ -1761,10 +1774,15 @@ def selenium_get(url, wait_sel=None, wait_s=5):
 
 def com_retry(fn,n=3,w=5):
     for i in range(n):
-        try: return fn()
+        try:
+            result = fn()
+            return result
         except Exception as e:
-            if i<n-1: log.warning(f"  T{i+1} falhou: {e}. Em {w}s..."); time.sleep(w)
-            else: raise
+            if i<n-1:
+                log.warning(f"  T{i+1} falhou: {e}. Em {w}s...")
+                time.sleep(w)
+            else:
+                raise
 
 # ============================================================
 # HELPERS / SCRAPERS
@@ -1820,8 +1838,7 @@ def validar(item, perfil):
 
     # Excluir se título é exatamente o nome da fonte
     fonte = (item.get("fonte") or "").lower()
-    pv_check = item.get("preco_valor")
-    if (titulo == fonte or titulo.replace(" ","") == fonte.replace(" ","")) and not pv_check:
+    if titulo == fonte or titulo.replace(" ","") == fonte.replace(" ",""):
         return False
 
     # Excluir arrendamentos
@@ -2123,9 +2140,7 @@ def _api_scrape(url_tpl, base, fonte, zona, extra_sels=None):
                 href = lt.get("href","")
                 link = href if href.startswith("http") else base.rstrip("/")+"/"+href.lstrip("/")
                 if link == base: continue
-                titulo = tt.get_text(strip=True) if tt else ""
-                if not titulo and lt:
-                    titulo = lt.get_text(strip=True)[:80]
+                titulo = tt.get_text(strip=True) if tt else fonte
                 preco  = pt.get_text(strip=True) if pt else "N/D"
                 # Filtrar entradas sem preço nem título útil
                 if len(titulo) < 5 and preco == "N/D": continue
@@ -2881,7 +2896,7 @@ def verificar_perfil(perfil):
         skipped = len(SCRAPERS) - len(args)
         log.info(f"  ⏭ {skipped} scrapers em pausa (broken) — a saltar")
     
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=6) as executor:
         futures = {executor.submit(correr_scraper, a): a[0] for a in args}
         for future in as_completed(futures):
             nome = futures[future]
