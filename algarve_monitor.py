@@ -458,8 +458,6 @@ def _is_exhausted(provider):
     if _date.today() >= until:
         d["cooldown_until"] = None; d["exhausted_at"] = None
         if provider in _proxy_exhausted: del _proxy_exhausted[provider]
-        _proxy_cooldown.pop(provider, None)
-        _session_exhausted.discard(provider)
         log.info(f"  ✅ {provider} resetou — novo ciclo")
         return False
     return True
@@ -546,8 +544,7 @@ def registar_proxy_resultado(proxy, sucesso, tempo_ms):
     if len(_proxy_time[proxy]) > 20:
         _proxy_time[proxy] = _proxy_time[proxy][-20:]
 
-def proxied_get(url, render=True, _depth=0, **kwargs):
-    if _depth > 2: return requests.models.Response()  # evita recursão infinita
+def proxied_get(url, render=True, **kwargs):
     """
     Rotação automática entre todos os proxies disponíveis:
     ScraperAPI → ZenRows → ScrapingBee → ScrapingAnt → Crawlbase → Scrape.do → direto
@@ -604,21 +601,8 @@ def proxied_get(url, render=True, _depth=0, **kwargs):
                           and not _is_exhausted(p)
                           and time.time() > _proxy_cooldown.get(p, 0)]
     if not proxies_ativos_now:
-        # Todos esgotados — usa crawlbase ou direto como último recurso
-        # NUNCA usa providers em _session_exhausted
-        fallback = [p for p in proxies
-                    if p not in _session_exhausted
-                    and p not in ('scrapingant',)]  # evita problemas de concorrência
-        if fallback:
-            proxies_ativos_now = sorted(fallback, key=lambda p: _proxy_cooldown.get(p, 0))[:1]
-        else:
-            # Absolutamente tudo esgotado — tenta direto
-            log.debug("Todos providers esgotados — a usar direto")
-            try:
-                return requests.get(url, headers=random_headers(), timeout=15, verify=False)
-            except Exception:
-                r = requests.models.Response(); r.status_code = 0; r._content = b""
-                return r
+        # All in cooldown — use the one with least cooldown time
+        proxies_ativos_now = sorted(proxies, key=lambda p: _proxy_cooldown.get(p, 0))[:1]
 
     # Score por domínio × provider (com confiança)
     from urllib.parse import urlparse as _up
@@ -659,7 +643,7 @@ def proxied_get(url, render=True, _depth=0, **kwargs):
         if proxy == "scraperapi":
             rp = "&render=true&wait=3000" if render else ""
             api = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={requests.utils.quote(url)}{rp}"
-            result = requests.get(api, timeout=60, headers=random_headers())
+            return requests.get(api, timeout=60, headers=random_headers())
 
         elif proxy == "zenrows":
             with _provider_semaphores.get("zenrows", threading.Semaphore(3)):
@@ -676,7 +660,7 @@ def proxied_get(url, render=True, _depth=0, **kwargs):
                 "render_js": "true" if render else "false",
                 "premium_proxy": "true",
             }
-            result = requests.get("https://app.scrapingbee.com/api/v1/", params=params, timeout=60)
+            return requests.get("https://app.scrapingbee.com/api/v1/", params=params, timeout=60)
 
         elif proxy == "crawlbase":
             # Crawlbase — suporta JS com &ajax_wait=true
@@ -718,25 +702,8 @@ def proxied_get(url, render=True, _depth=0, **kwargs):
             api = f"https://api.scrape.do?token={SCRAPEDO_KEY}&url={requests.utils.quote(url)}{rp}"
             result = requests.get(api, timeout=60, headers=random_headers())
 
-        ms = int((time.time()-t0)*1000)
-        # Detecção de quota AQUI — antes de devolver — afecta TODOS os callers
-        if hasattr(result, 'text') and result.text and len(result.text) < 500:
-            msg = result.text[:200]
-            for _prov, _pats in EXHAUSTED_PATTERNS:
-                if _prov == proxy and any(_p.lower() in msg.lower() for _p in _pats):
-                    log.warning(f"    proxy resposta bloqueada ({len(result.text)} chars): {msg[:100]}")
-                    _record_provider(proxy, False, ms, error="quota_exceeded", domain=_domain)
-                    _mark_exhausted(proxy, msg)
-                    # Tenta próximo provider disponível em vez de devolver resposta inútil
-                    next_providers = [p for p in proxies if p != proxy
-                                      and p not in _session_exhausted
-                                      and not _is_exhausted(p)]
-                    if next_providers:
-                        log.info(f"    a tentar {next_providers[0]} após {proxy} esgotado")
-                        return proxied_get(url, render=render, _depth=kwargs.get('_depth',0)+1)
-                    break
-        _record_provider(proxy, True, ms, domain=_domain)
-        registar_proxy_resultado(proxy, True, ms)
+        _record_provider(proxy, True, int((time.time()-t0)*1000), domain=_domain)
+        registar_proxy_resultado(proxy, True, int((time.time()-t0)*1000))
         return result
     except Exception as e:
         _record_provider(proxy, False, int((time.time()-t0)*1000),
@@ -1774,15 +1741,10 @@ def selenium_get(url, wait_sel=None, wait_s=5):
 
 def com_retry(fn,n=3,w=5):
     for i in range(n):
-        try:
-            result = fn()
-            return result
+        try: return fn()
         except Exception as e:
-            if i<n-1:
-                log.warning(f"  T{i+1} falhou: {e}. Em {w}s...")
-                time.sleep(w)
-            else:
-                raise
+            if i<n-1: log.warning(f"  T{i+1} falhou: {e}. Em {w}s..."); time.sleep(w)
+            else: raise
 
 # ============================================================
 # HELPERS / SCRAPERS
@@ -1922,23 +1884,22 @@ def paginar_playwright(url_tpl, parse_fn, nome="?"):
     """Usa Playwright para scraping — fallback quando proxies falham."""
     if not PLAYWRIGHT_AVAILABLE: return [], 0
     todos=[]; pag=1
+    # Usa browser partilhado se disponível
+    _pb = getattr(scrape_playwright_html, '_shared_browser', None)
+
     for pag in range(1, min(3, MAX_PAGINAS)+1):  # max 3 páginas com Playwright
         url = url_tpl.format(page=pag)
         with _playwright_semaphore:
             try:
-                with sync_playwright() as p:
-                    browser = p.chromium.launch(
-                        headless=True, executable_path="/usr/bin/chromium",
-                        args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu",
-                              "--disable-blink-features=AutomationControlled"])
-                    ctx = browser.new_context(
-                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                        viewport={"width":1920,"height":1080}, locale="pt-PT")
-                    page = ctx.new_page()
-                    page.goto(url, wait_until="domcontentloaded", timeout=20000)
-                    page.wait_for_timeout(3000)
-                    html = page.content()
-                    browser.close()
+                if _pb and _pb.is_connected():
+                    html = _pw_get_html(_pb, nome, url, "[class*='property'],article,.card")
+                else:
+                    with sync_playwright() as p:
+                        b = p.chromium.launch(headless=True, executable_path="/usr/bin/chromium",
+                            args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu",
+                                  "--single-process"])
+                        html = _pw_get_html(b, nome, url, "[class*='property'],article,.card")
+                        b.close()
                 items = parse_fn(html)
                 log.info(f"    playwright pag {pag}: {len(items)} items")
                 if not items: break
@@ -2324,20 +2285,17 @@ def scrape_sothebys(p):
     items = []
     with _playwright_semaphore:
         try:
-            with sync_playwright() as pw:
-                browser = pw.chromium.launch(
-                    headless=True, executable_path="/usr/bin/chromium",
-                    args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu"])
-                ctx = browser.new_context(
-                    ignore_https_errors=True,
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    locale="pt-PT")
-                page = ctx.new_page()
-                page.goto("https://www.sothebysrealty.pt/imoveis/compra",
-                          wait_until="domcontentloaded", timeout=20000)
-                page.wait_for_timeout(3000)
-                html = page.content()
-                browser.close()
+            _sb = getattr(scrape_playwright_html, '_shared_browser', None)
+            if _sb and _sb.is_connected():
+                html = _pw_get_html(_sb, "Sotheby's", "https://www.sothebysrealty.pt/imoveis/compra",
+                                    ".property-card,article,a[href*='/property/']")
+            else:
+                with sync_playwright() as pw:
+                    b = pw.chromium.launch(headless=True, executable_path="/usr/bin/chromium",
+                        args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu","--single-process"])
+                    html = _pw_get_html(b, "Sotheby's", "https://www.sothebysrealty.pt/imoveis/compra",
+                                        ".property-card,article")
+                    b.close()
             soup = safe_soup(html, "Sotheby's")
             if soup:
                 for card in soup.select("[class*='property'],[class*='listing'],article"):
@@ -2464,6 +2422,36 @@ def scrape_a1algarve(p):
 # Semáforo para limitar Playwright a 2 instâncias simultâneas
 import threading
 _playwright_semaphore = threading.Semaphore(2)
+
+def _pw_get_html(browser, nome, url, sel):
+    """Abre uma página no browser partilhado e devolve o HTML."""
+    ctx = None
+    try:
+        ctx = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120",
+            viewport={"width":1920,"height":1080}, locale="pt-PT")
+        page = ctx.new_page()
+        page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        try: page.wait_for_selector(sel, timeout=8000)
+        except: pass
+        page.wait_for_timeout(2000)
+        for pos in [0.3, 0.6, 1.0]:
+            try:
+                page.evaluate(f"window.scrollTo(0, document.body.scrollHeight*{pos})")
+                page.wait_for_timeout(700)
+            except: break
+        html = page.content()
+        log.info(f"    {nome}: {len(html):,} chars HTML")
+        if len(html) < 5000:
+            log.warning(f"    {nome}: HTML pequeno ({len(html)} chars) — SPA pode não ter renderizado")
+        return html
+    except Exception as e:
+        log.error(f"    {nome} _pw_get_html: {e}")
+        return ""
+    finally:
+        if ctx:
+            try: ctx.close()
+            except: pass
 
 def scrape_playwright_html(nome, url, sel, zona, perfil):
     """Scraper genérico usando Playwright para sites React/SPA.
@@ -2896,8 +2884,19 @@ def verificar_perfil(perfil):
         skipped = len(SCRAPERS) - len(args)
         log.info(f"  ⏭ {skipped} scrapers em pausa (broken) — a saltar")
     
-    with ThreadPoolExecutor(max_workers=6) as executor:
-        futures = {executor.submit(correr_scraper, a): a[0] for a in args}
+    # Separa scrapers: HTTP (paralelos) vs Playwright (sequenciais com browser partilhado)
+    PW_SCRAPERS_NAMES = {
+        "Boto Properties","Sunpoint Properties","Algarve Unique Properties",
+        "Garvetur","Barra Prime","Mimosa Properties","Sortami","Vernon Algarve",
+        "Algarve Dream Property","Your Luxury Property","Dils Portugal",
+        "D'Alma Portuguesa","Sotheby's",
+    }
+    args_http = [a for a in args if a[0] not in PW_SCRAPERS_NAMES]
+    args_pw   = [a for a in args if a[0] in PW_SCRAPERS_NAMES]
+
+    # Corre scrapers HTTP em paralelo (seguros sem browser)
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {executor.submit(correr_scraper, a): a[0] for a in args_http}
         for future in as_completed(futures):
             nome = futures[future]
             try:
@@ -2905,6 +2904,36 @@ def verificar_perfil(perfil):
                 todos_raw.extend(resultado)
             except Exception as e:
                 log.error(f"    {nome} thread error: {e}")
+
+    # Corre scrapers Playwright SEQUENCIALMENTE com um único browser partilhado
+    if args_pw and PLAYWRIGHT_AVAILABLE:
+        log.info(f"  🌐 A iniciar browser Playwright para {len(args_pw)} scrapers...")
+        try:
+            with sync_playwright() as _spw:
+                _browser = _spw.chromium.launch(
+                    headless=True, executable_path="/usr/bin/chromium",
+                    args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu",
+                          "--single-process","--disable-blink-features=AutomationControlled"])
+                # Partilha o browser com scrape_playwright_html via atributo de função
+                scrape_playwright_html._shared_browser = _browser
+                for a in args_pw:
+                    try:
+                        resultado = correr_scraper(a)
+                        todos_raw.extend(resultado)
+                    except Exception as e:
+                        log.error(f"    {a[0]} PW error: {e}")
+                scrape_playwright_html._shared_browser = None
+                _browser.close()
+            log.info("  🌐 Browser Playwright fechado")
+        except Exception as e:
+            log.error(f"  Playwright browser error: {e}")
+            # Fallback: corre PW scrapers sem browser partilhado
+            for a in args_pw:
+                try:
+                    resultado = correr_scraper(a)
+                    todos_raw.extend(resultado)
+                except Exception as ex:
+                    log.error(f"    {a[0]} fallback error: {ex}")
 
     # Enriquece novos itens com detalhes completos (amostra de 10 por ronda para não sobrecarregar)
     todos=deduplicar(todos_raw)
