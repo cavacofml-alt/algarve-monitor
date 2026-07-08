@@ -704,8 +704,23 @@ def proxied_get(url, render=True, **kwargs):
             api = f"https://api.scrape.do?token={SCRAPEDO_KEY}&url={requests.utils.quote(url)}{rp}"
             result = requests.get(api, timeout=60, headers=random_headers())
 
-        _record_provider(proxy, True, int((time.time()-t0)*1000), domain=_domain)
-        registar_proxy_resultado(proxy, True, int((time.time()-t0)*1000))
+        ms = int((time.time()-t0)*1000)
+        _record_provider(proxy, True, ms, domain=_domain)
+        registar_proxy_resultado(proxy, True, ms)
+        # Detecta quota esgotada DENTRO do proxied_get — afecta TODOS os callers
+        if result is not None and hasattr(result, 'text') and len(result.text) < 500:
+            msg = result.text[:150]
+            for _prov, _pats in EXHAUSTED_PATTERNS:
+                if _prov == proxy and any(_p.lower() in msg.lower() for _p in _pats):
+                    _record_provider(proxy, False, ms, error="quota_exceeded", domain=_domain)
+                    _mark_exhausted(proxy, msg)
+                    log.debug(f"  proxied_get: {proxy} quota detectada — a tentar direto")
+                    # Tenta direto como fallback imediato
+                    try:
+                        return requests.get(url, headers=random_headers(), timeout=10, verify=False)
+                    except Exception:
+                        pass
+                    return result  # devolve resposta original (caller verá 0 items)
         return result
     except Exception as e:
         _record_provider(proxy, False, int((time.time()-t0)*1000),
@@ -1803,7 +1818,7 @@ def validar(item, perfil):
     if titulo in TITULOS_GENERICOS or len(titulo) < 5:
         return False
 
-    # Excluir se título é exatamente o nome da fonte E não tem preço real
+    # Excluir se título é exatamente o nome da fonte
     fonte = (item.get("fonte") or "").lower()
     pv_check = item.get("preco_valor")
     if (titulo == fonte or titulo.replace(" ","") == fonte.replace(" ","")) and not pv_check:
@@ -1827,13 +1842,6 @@ def validar(item, perfil):
     # Excluir preços mensais (arrendamento)
     if pv and pv < 10000:
         log.debug(f"  validar REJEITADO preço {pv} < 10000 (possível renda) | {item.get('fonte')}")
-        return False
-
-    # Quartos mínimos (se definido no perfil)
-    q = item.get("quartos")
-    q_min = perfil.get("quartos_min", 0)
-    if q and q_min and q < q_min:
-        log.debug(f"  validar REJEITADO quartos {q} < min {q_min} | {item.get('titulo','')[:30]}")
         return False
 
     return True
@@ -2116,7 +2124,6 @@ def _api_scrape(url_tpl, base, fonte, zona, extra_sels=None):
                 link = href if href.startswith("http") else base.rstrip("/")+"/"+href.lstrip("/")
                 if link == base: continue
                 titulo = tt.get_text(strip=True) if tt else ""
-                # Se não há título, tenta usar texto do link
                 if not titulo and lt:
                     titulo = lt.get_text(strip=True)[:80]
                 preco  = pt.get_text(strip=True) if pt else "N/D"
@@ -2764,8 +2771,7 @@ def card_email(im, badge="NOVO", cor="#16a34a"):
 def _send_via_resend(assunto, html, destinatario):
     """Envia via Resend API — não usa SMTP (Railway bloqueia portas 465/587)."""
     key = os.getenv("RESEND_API_KEY","")
-    _rem=os.getenv("EMAIL_REMETENTE","")
-    remetente="Monitor <onboarding@resend.dev>" if not _rem or "@gmail" in _rem else _rem
+    remetente = os.getenv("EMAIL_REMETENTE","monitor@algarve-imoveis.pt")
     if not key:
         return False, "RESEND_API_KEY não configurada"
     try:
@@ -2854,12 +2860,10 @@ def correr_scraper(args):
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
-                # Actualiza scraper_stats com esquema correcto
                 cur.execute("""
-                    INSERT INTO scraper_logs(fonte, perfil_nome, total, novos, paginas, erros, executado_em)
-                    VALUES(%s,%s,%s,%s,%s,%s,NOW())
-                    ON CONFLICT DO NOTHING
-                """, (nome, perfil["nome"], total, 0, pags, erros or None))
+                    INSERT INTO scraper_stats(fonte, perfil_nome, duration_ms, items, success, erro)
+                    VALUES(%s,%s,%s,%s,%s,%s)
+                """, (nome, perfil["nome"], tempo, total, total>0, erros or None))
             conn.commit()
     except Exception: pass
     return anuncios
@@ -2877,7 +2881,7 @@ def verificar_perfil(perfil):
         skipped = len(SCRAPERS) - len(args)
         log.info(f"  ⏭ {skipped} scrapers em pausa (broken) — a saltar")
     
-    with ThreadPoolExecutor(max_workers=6) as executor:
+    with ThreadPoolExecutor(max_workers=3) as executor:
         futures = {executor.submit(correr_scraper, a): a[0] for a in args}
         for future in as_completed(futures):
             nome = futures[future]
