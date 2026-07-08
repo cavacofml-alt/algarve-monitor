@@ -446,7 +446,6 @@ async function carregar(){
     if(r1 && r1.erro) console.error('API imoveis:', r1.erro);
   } catch(e) {
     console.error('Erro ao carregar:', e);
-    document.getElementById('loading')&&(document.getElementById('loading').textContent='Erro: '+e.message);
     return;
   }
   todos=imoveis;
