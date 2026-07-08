@@ -457,7 +457,6 @@ def _is_exhausted(provider):
     if not until: return False
     if _date.today() >= until:
         d["cooldown_until"] = None; d["exhausted_at"] = None
-        d["circuit_open"] = False; d["consecutive_failures"] = 0
         if provider in _proxy_exhausted: del _proxy_exhausted[provider]
         _proxy_cooldown.pop(provider, None)
         _session_exhausted.discard(provider)
@@ -1230,10 +1229,7 @@ def guardar_imovel(item, perfil_nome, score):
                   json.dumps(item.get("detalhes_extra",{}))))
         conn.commit()
 
-def marcar_removidos(ids_vistos, perfil_nome, total_encontrados=0):
-    if 0 < total_encontrados < 10:
-        log.warning(f"  ⚠️ Só {total_encontrados} items — a saltar marcar_removidos")
-        return []
+def marcar_removidos(ids_vistos, perfil_nome):
     removidos = []
     with get_db() as conn:
         with conn.cursor(row_factory=psycopg_rows.dict_row) as cur:
@@ -1807,9 +1803,10 @@ def validar(item, perfil):
     if titulo in TITULOS_GENERICOS or len(titulo) < 5:
         return False
 
-    # Excluir se título é exatamente o nome da fonte
+    # Excluir se título é exatamente o nome da fonte E não tem preço real
     fonte = (item.get("fonte") or "").lower()
-    if titulo == fonte or titulo.replace(" ","") == fonte.replace(" ",""):
+    pv_check = item.get("preco_valor")
+    if (titulo == fonte or titulo.replace(" ","") == fonte.replace(" ","")) and not pv_check:
         return False
 
     # Excluir arrendamentos
@@ -1830,6 +1827,13 @@ def validar(item, perfil):
     # Excluir preços mensais (arrendamento)
     if pv and pv < 10000:
         log.debug(f"  validar REJEITADO preço {pv} < 10000 (possível renda) | {item.get('fonte')}")
+        return False
+
+    # Quartos mínimos (se definido no perfil)
+    q = item.get("quartos")
+    q_min = perfil.get("quartos_min", 0)
+    if q and q_min and q < q_min:
+        log.debug(f"  validar REJEITADO quartos {q} < min {q_min} | {item.get('titulo','')[:30]}")
         return False
 
     return True
@@ -2111,7 +2115,10 @@ def _api_scrape(url_tpl, base, fonte, zona, extra_sels=None):
                 href = lt.get("href","")
                 link = href if href.startswith("http") else base.rstrip("/")+"/"+href.lstrip("/")
                 if link == base: continue
-                titulo = tt.get_text(strip=True) if tt else fonte
+                titulo = tt.get_text(strip=True) if tt else ""
+                # Se não há título, tenta usar texto do link
+                if not titulo and lt:
+                    titulo = lt.get_text(strip=True)[:80]
                 preco  = pt.get_text(strip=True) if pt else "N/D"
                 # Filtrar entradas sem preço nem título útil
                 if len(titulo) < 5 and preco == "N/D": continue
@@ -2434,62 +2441,7 @@ def scrape_a1algarve(p):
 
 # Semáforo para limitar Playwright a 2 instâncias simultâneas
 import threading
-_playwright_semaphore = threading.Semaphore(1)  # 1 operação PW de cada vez
-_pw_browser    = None  # browser partilhado — 1 launch por ronda
-_pw_playwright = None  # contexto sync_playwright
-
-def _pw_fetch_html(nome, url, sel):
-    """Obtém HTML usando o browser Playwright PARTILHADO.
-    Usa new_context() em vez de launch() — muito mais eficiente em memória."""
-    global _pw_browser
-    if _pw_browser is None:
-        log.error(f"  {nome}: _pw_browser não inicializado — a tentar launch próprio")
-        # Fallback: launch temporário
-        try:
-            with sync_playwright() as _p:
-                _b = _p.chromium.launch(headless=True, executable_path="/usr/bin/chromium",
-                    args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu"])
-                _ctx = _b.new_context(user_agent="Mozilla/5.0 Chrome/120", locale="pt-PT")
-                _pg  = _ctx.new_page()
-                _pg.goto(url, wait_until="domcontentloaded", timeout=60000)
-                _pg.wait_for_timeout(3000)
-                _html = _pg.content()
-                _ctx.close(); _b.close()
-            return _html
-        except Exception as e:
-            log.error(f"  {nome} fallback launch: {e}")
-            return ""
-    ctx = None
-    try:
-        ctx = _pw_browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120",
-            viewport={"width":1920,"height":1080}, locale="pt-PT", java_script_enabled=True)
-        page = ctx.new_page()
-        page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        # Espera pelo selector (SPA)
-        try:
-            page.wait_for_selector(sel, timeout=10000)
-        except Exception:
-            pass
-        page.wait_for_timeout(2000)
-        for pos in [0.3, 0.6, 1.0]:
-            try:
-                page.evaluate(f"window.scrollTo(0, document.body.scrollHeight*{pos})")
-                page.wait_for_timeout(700)
-            except Exception:
-                break
-        html = page.content()
-        log.info(f"    {nome}: {len(html):,} chars HTML")
-        if len(html) < 5000:
-            log.warning(f"    {nome}: HTML pequeno ({len(html)} chars) — SPA não renderizou?")
-        return html
-    except Exception as e:
-        log.error(f"    {nome} _pw_fetch: {e}")
-        return ""
-    finally:
-        if ctx:
-            try: ctx.close()
-            except: pass
+_playwright_semaphore = threading.Semaphore(2)
 
 def scrape_playwright_html(nome, url, sel, zona, perfil):
     """Scraper genérico usando Playwright para sites React/SPA.
@@ -2500,7 +2452,24 @@ def scrape_playwright_html(nome, url, sel, zona, perfil):
     items = []
     with _playwright_semaphore:
         try:
-            html = _pw_fetch_html(nome, url, sel)
+            with sync_playwright() as p:
+                browser = p.chromium.launch(
+                    headless=True, executable_path="/usr/bin/chromium",
+                    args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu",
+                          "--disable-blink-features=AutomationControlled"]
+                )
+                ctx = browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    viewport={"width":1920,"height":1080}, locale="pt-PT"
+                )
+                page = ctx.new_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=20000)
+                page.wait_for_timeout(3000)
+                for pos in [0.3, 0.6, 1.0]:
+                    page.evaluate(f"window.scrollTo(0, document.body.scrollHeight*{pos})")
+                    page.wait_for_timeout(1000)
+                html = page.content()
+                browser.close()
             soup = safe_soup(html, nome)
             if not soup:
                 return [], 0
@@ -2795,8 +2764,8 @@ def card_email(im, badge="NOVO", cor="#16a34a"):
 def _send_via_resend(assunto, html, destinatario):
     """Envia via Resend API — não usa SMTP (Railway bloqueia portas 465/587)."""
     key = os.getenv("RESEND_API_KEY","")
-    _rem = os.getenv("EMAIL_REMETENTE","")
-    remetente = "Monitor <onboarding@resend.dev>" if not _rem or "@gmail" in _rem else _rem
+    _rem=os.getenv("EMAIL_REMETENTE","")
+    remetente="Monitor <onboarding@resend.dev>" if not _rem or "@gmail" in _rem else _rem
     if not key:
         return False, "RESEND_API_KEY não configurada"
     try:
@@ -2885,34 +2854,20 @@ def correr_scraper(args):
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
+                # Actualiza scraper_stats com esquema correcto
                 cur.execute("""
-                    INSERT INTO scraper_stats(fonte, perfil_nome, duration_ms, items, success, erro)
-                    VALUES(%s,%s,%s,%s,%s,%s)
-                """, (nome, perfil["nome"], tempo, total, total>0, erros or None))
+                    INSERT INTO scraper_logs(fonte, perfil_nome, total, novos, paginas, erros, executado_em)
+                    VALUES(%s,%s,%s,%s,%s,%s,NOW())
+                    ON CONFLICT DO NOTHING
+                """, (nome, perfil["nome"], total, 0, pags, erros or None))
             conn.commit()
     except Exception: pass
     return anuncios
 
 def verificar_perfil(perfil):
-    global _pw_browser, _pw_playwright
     _preflight_providers()
     log.info(f"▶ {perfil['nome']} — a correr {len(SCRAPERS)} scrapers em paralelo")
     todos_raw = []
-
-    # Lança o browser Playwright UMA VEZ para toda a ronda
-    _pw_pw_ctx = None
-    if PLAYWRIGHT_AVAILABLE:
-        try:
-            from playwright.sync_api import sync_playwright as _spw
-            _pw_pw_ctx = _spw().__enter__()
-            _pw_browser = _pw_pw_ctx.chromium.launch(
-                headless=True, executable_path="/usr/bin/chromium",
-                args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu",
-                      "--single-process","--disable-blink-features=AutomationControlled"])
-            log.info(f"  🌐 Playwright browser iniciado (pid={_pw_browser.version})")
-        except Exception as _e:
-            log.warning(f"  ⚠️ Playwright não disponível: {_e}")
-            _pw_browser = None
 
     # Corre scrapers em paralelo com ThreadPoolExecutor
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -2922,7 +2877,7 @@ def verificar_perfil(perfil):
         skipped = len(SCRAPERS) - len(args)
         log.info(f"  ⏭ {skipped} scrapers em pausa (broken) — a saltar")
     
-    with ThreadPoolExecutor(max_workers=2) as executor:  # Railway: RAM limitada
+    with ThreadPoolExecutor(max_workers=6) as executor:
         futures = {executor.submit(correr_scraper, a): a[0] for a in args}
         for future in as_completed(futures):
             nome = futures[future]
@@ -2931,18 +2886,6 @@ def verificar_perfil(perfil):
                 todos_raw.extend(resultado)
             except Exception as e:
                 log.error(f"    {nome} thread error: {e}")
-
-    # Fecha o browser Playwright partilhado
-    if _pw_browser:
-        try:
-            _pw_browser.close()
-        except Exception: pass
-        _pw_browser = None
-    if _pw_pw_ctx:
-        try:
-            _pw_pw_ctx.__exit__(None, None, None)
-        except Exception: pass
-        _pw_pw_ctx = None
 
     # Enriquece novos itens com detalhes completos (amostra de 10 por ronda para não sobrecarregar)
     todos=deduplicar(todos_raw)
@@ -2968,7 +2911,7 @@ def verificar_perfil(perfil):
             if disp_ant==False:
                 marcar_reativado(item["id"]); reativados.append(item)
 
-    removidos=marcar_removidos(ids_ronda,perfil["nome"], total_encontrados=len(todos))
+    removidos=marcar_removidos(ids_ronda,perfil["nome"])
     atualizar_snapshot_mercado(perfil["nome"])
     log.info(f"  N:{len(novos)} B:{len(baixas)} R:{len(reativados)} Rem:{len(removidos)}")
 
