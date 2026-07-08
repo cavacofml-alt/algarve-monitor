@@ -459,8 +459,8 @@ def _is_exhausted(provider):
         d["cooldown_until"] = None; d["exhausted_at"] = None
         d["circuit_open"] = False; d["consecutive_failures"] = 0
         if provider in _proxy_exhausted: del _proxy_exhausted[provider]
-        # CRÍTICO: limpar _proxy_cooldown (foi definido como 2099 ao esgotar)
-        if provider in _proxy_cooldown: del _proxy_cooldown[provider]
+        # CRÍTICO: limpar proxy_cooldown (foi definido como 2099 ao esgotar)
+        _proxy_cooldown.pop(provider, None)
         _session_exhausted.discard(provider)
         log.info(f"  ✅ {provider} resetou — novo ciclo")
         return False
@@ -1231,7 +1231,12 @@ def guardar_imovel(item, perfil_nome, score):
                   json.dumps(item.get("detalhes_extra",{}))))
         conn.commit()
 
-def marcar_removidos(ids_vistos, perfil_nome):
+def marcar_removidos(ids_vistos, perfil_nome, total_encontrados=0):
+    # Não marcar como removido se a ronda falhou (poucos resultados = scrapers com erros)
+    if total_encontrados < 10:
+        log.warning(f"  ⚠️ Apenas {total_encontrados} imóveis encontrados — a saltar marcar_removidos (pode ser falha de scrapers)")
+        return []
+    
     removidos = []
     with get_db() as conn:
         with conn.cursor(row_factory=psycopg_rows.dict_row) as cur:
@@ -1381,7 +1386,6 @@ def get_stats():
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM imoveis WHERE disponivel=TRUE"); total=cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM imoveis WHERE criado_em>NOW()-INTERVAL '24 hours'"); ult=cur.fetchone()[0]
-            # historico_precos pode não existir em instâncias antigas
             try:
                 cur.execute("SELECT COUNT(*) FROM historico_precos"); baixas=cur.fetchone()[0]
             except Exception:
@@ -2433,7 +2437,7 @@ def scrape_a1algarve(p):
 
 # Semáforo para limitar Playwright a 2 instâncias simultâneas
 import threading
-_playwright_semaphore = threading.Semaphore(2)
+_playwright_semaphore = threading.Semaphore(1)
 
 def scrape_playwright_html(nome, url, sel, zona, perfil):
     """Scraper genérico usando Playwright para sites React/SPA.
@@ -2756,7 +2760,9 @@ def card_email(im, badge="NOVO", cor="#16a34a"):
 def _send_via_resend(assunto, html, destinatario):
     """Envia via Resend API — não usa SMTP (Railway bloqueia portas 465/587)."""
     key = os.getenv("RESEND_API_KEY","")
-    remetente = os.getenv("EMAIL_REMETENTE","monitor@algarve-imoveis.pt")
+    # Resend não aceita gmail.com como remetente — usar domínio verificado
+    _rem = os.getenv("EMAIL_REMETENTE","")
+    remetente = "Monitor <onboarding@resend.dev>" if not _rem or "@gmail" in _rem else _rem
     if not key:
         return False, "RESEND_API_KEY não configurada"
     try:
@@ -2900,7 +2906,7 @@ def verificar_perfil(perfil):
             if disp_ant==False:
                 marcar_reativado(item["id"]); reativados.append(item)
 
-    removidos=marcar_removidos(ids_ronda,perfil["nome"])
+    removidos=marcar_removidos(ids_ronda,perfil["nome"], total_encontrados=len(todos))
     atualizar_snapshot_mercado(perfil["nome"])
     log.info(f"  N:{len(novos)} B:{len(baixas)} R:{len(reativados)} Rem:{len(removidos)}")
 

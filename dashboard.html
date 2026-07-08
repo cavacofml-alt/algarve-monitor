@@ -437,18 +437,16 @@ function showTab(name){
 async function carregar(){
   let imoveis=[], stats={total:0,ultimas_24h:0,baixas_preco:0,removidos:0,reativados:0,favoritos:0};
   try {
-    const res = await Promise.all([
+    const[r1,r2]=await Promise.all([
       fetch('/api/imoveis').then(r=>r.json()),
       fetch('/api/stats').then(r=>r.json()),
     ]);
-    imoveis = Array.isArray(res[0]) ? res[0] : [];
-    stats   = res[1].erro ? stats : res[1];
-    if(!Array.isArray(res[0]) && res[0].erro){
-      console.error('API imoveis erro:', res[0].erro);
-    }
+    imoveis = Array.isArray(r1) ? r1 : [];
+    stats   = r2 && !r2.erro ? r2 : stats;
+    if(r1 && r1.erro) console.error('API imoveis:', r1.erro);
   } catch(e) {
-    console.error('Erro ao carregar dados:', e);
-    document.getElementById('loading').textContent='Erro ao carregar. Verifica a consola.';
+    console.error('Erro ao carregar:', e);
+    document.getElementById('loading')&&(document.getElementById('loading').textContent='Erro: '+e.message);
     return;
   }
   todos=imoveis;
