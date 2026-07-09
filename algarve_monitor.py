@@ -2607,8 +2607,64 @@ def scrape_a1algarve(p):
 # Semáforo para limitar Playwright a 2 instâncias simultâneas
 _playwright_semaphore = threading.Semaphore(1)  # max 1 browser simultâneo
 
+def _pw_open_page_sync(nome, url, sel):
+    """Versão síncrona pura de _pw_open_page — corre em thread sem asyncio."""
+    try:
+        # Usa playwright (não patchright) para evitar conflito asyncio
+        from playwright.sync_api import sync_playwright as _spw_clean
+    except ImportError:
+        return ""
+    try:
+        with _spw_clean() as _p:
+            b = _p.chromium.launch(headless=True, executable_path="/usr/bin/chromium",
+                args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu",
+                      "--single-process","--disable-blink-features=AutomationControlled"])
+            ctx = b.new_context(user_agent="Mozilla/5.0 Chrome/120",
+                viewport={"width":1920,"height":1080}, locale="pt-PT")
+            try:
+                page = ctx.new_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                try: page.wait_for_selector(sel, timeout=8000)
+                except: pass
+                page.wait_for_timeout(2000)
+                for pos in [0.3, 0.6, 1.0]:
+                    try:
+                        page.evaluate(f"window.scrollTo(0,document.body.scrollHeight*{pos})")
+                        page.wait_for_timeout(700)
+                    except: break
+                html = page.content()
+                log.info(f"    {nome}: {len(html):,} chars HTML")
+                return html
+            finally:
+                try: ctx.close()
+                except: pass
+            b.close()
+    except Exception as e:
+        log.error(f"  {nome} _pw_open_page_sync: {e}")
+        return ""
+
 def _pw_open_page(nome, url, sel):
     """Abre página no browser Playwright partilhado (new_context, não new browser)."""
+    import asyncio
+    # Detecta se estamos dentro de um asyncio loop (Gunicorn gthread)
+    # Se sim, usa thread separada para correr sync_playwright
+    try:
+        loop = asyncio.get_running_loop()
+        in_asyncio = loop is not None
+    except RuntimeError:
+        in_asyncio = False
+
+    if in_asyncio:
+        # Corre em thread separada para evitar conflito com asyncio
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(_pw_open_page_sync, nome, url, sel)
+            try:
+                return future.result(timeout=90)
+            except Exception as e:
+                log.error(f"  {nome} PW thread: {e}")
+                return ""
+
     _b = getattr(scrape_playwright_html, '_shared_browser', None)
     ctx = None
     try:
@@ -3084,27 +3140,45 @@ def verificar_perfil(perfil):
 
     if args_pw and PLAYWRIGHT_AVAILABLE:
         log.info(f"  🌐 Browser Playwright — {len(args_pw)} scrapers sequenciais")
-        try:
-            with sync_playwright() as _spw:
-                _browser = _spw.chromium.launch(
-                    headless=True, executable_path="/usr/bin/chromium",
-                    args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu",
-                          "--single-process","--disable-blink-features=AutomationControlled"])
-                scrape_playwright_html._shared_browser = _browser
-                for a in args_pw:
-                    try:
-                        resultado = correr_scraper(a)
-                        todos_raw.extend(resultado)
-                    except Exception as e:
-                        log.error(f"    {a[0]} PW error: {e}")
-                scrape_playwright_html._shared_browser = None
-                _browser.close()
-                log.info("  🌐 Browser fechado")
-        except Exception as e:
-            log.error(f"  Playwright error: {e}")
-            for a in args_pw:
-                try: todos_raw.extend(correr_scraper(a))
-                except: pass
+
+        def _run_pw_scrapers():
+            """Corre todos os scrapers Playwright num thread sem asyncio."""
+            # Usa playwright (não patchright) para sync API estável
+            try:
+                from playwright.sync_api import sync_playwright as _spw_sync
+            except ImportError:
+                log.error("  playwright não instalado")
+                return []
+            resultados_pw = []
+            try:
+                with _spw_sync() as _spw:
+                    _browser = _spw.chromium.launch(
+                        headless=True, executable_path="/usr/bin/chromium",
+                        args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu",
+                              "--single-process","--disable-blink-features=AutomationControlled"])
+                    scrape_playwright_html._shared_browser = _browser
+                    for a in args_pw:
+                        try:
+                            resultado = correr_scraper(a)
+                            resultados_pw.extend(resultado)
+                        except Exception as e:
+                            log.error(f"    {a[0]} PW error: {e}")
+                    scrape_playwright_html._shared_browser = None
+                    _browser.close()
+                    log.info("  🌐 Browser fechado")
+            except Exception as e:
+                log.error(f"  Playwright browser error: {e}")
+            return resultados_pw
+
+        # Lança em thread separada para garantir que não há asyncio loop
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(_run_pw_scrapers)
+            try:
+                pw_results = future.result(timeout=300)
+                todos_raw.extend(pw_results)
+            except Exception as e:
+                log.error(f"  PW thread error: {e}")
 
     # Enriquece novos itens com detalhes completos (amostra de 10 por ronda para não sobrecarregar)
     todos=deduplicar(todos_raw)
@@ -3210,6 +3284,8 @@ def verificar():
     log.info(f"Verificação: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
     log.info("="*55)
     _load_provider_state()  # restaura providers esgotados após restart
+    # Força sincronização do estado para todos os threads
+    log.info(f"  Providers excluídos desta sessão: {sorted(_session_exhausted)}")
 
     # Verifica créditos — só para se ScraperAPI esgotado E sem outros proxies
     creditos = verificar_creditos_scraperapi()
