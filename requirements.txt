@@ -10,3 +10,6 @@ flask==3.0.3
 gunicorn==22.0.0
 pywebpush==2.0.0
 openpyxl==3.1.2
+curl_cffi>=0.7.0
+cloudscraper>=1.2.71
+camoufox>=0.4.0

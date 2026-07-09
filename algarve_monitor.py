@@ -20,6 +20,23 @@ import hashlib, secrets, functools
 import requests
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# curl_cffi — impersonates real browsers at TLS level (very hard to detect)
+try:
+    from curl_cffi import requests as cffi_requests
+    CURL_CFFI_AVAILABLE = True
+except ImportError:
+    CURL_CFFI_AVAILABLE = False
+
+# cloudscraper — bypasses Cloudflare JS challenges without browser
+try:
+    import cloudscraper
+    _cloudscraper = cloudscraper.create_scraper(
+        browser={"browser":"chrome","platform":"windows","mobile":False})
+    CLOUDSCRAPER_AVAILABLE = True
+except ImportError:
+    CLOUDSCRAPER_AVAILABLE = False
+    _cloudscraper = None
 import psycopg
 from psycopg import rows as psycopg_rows
 from datetime import datetime, timedelta
@@ -58,19 +75,26 @@ def safe_soup(html, fonte="?"):
 from flask import (Flask, render_template_string, jsonify, request,
                    session, redirect, url_for, make_response)
 # Playwright replaces Selenium for better JS rendering
+# Patchright > Playwright para anti-deteção
+# Camoufox disponível para sites muito protegidos (usado separadamente)
 try:
-    # Patchright: fork do Playwright com anti-deteção melhorada
-    # API 100% compatível com playwright — só muda o import
     from patchright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
     PLAYWRIGHT_AVAILABLE = True
-    log.debug("Patchright carregado (anti-deteção activa)")
+    PLAYWRIGHT_ENGINE = "patchright"
 except ImportError:
     try:
         from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
         PLAYWRIGHT_AVAILABLE = True
-        log.debug("Playwright carregado (fallback — sem anti-deteção)")
+        PLAYWRIGHT_ENGINE = "playwright"
     except ImportError:
         PLAYWRIGHT_AVAILABLE = False
+        PLAYWRIGHT_ENGINE = None
+
+try:
+    from camoufox.sync_api import Camoufox
+    CAMOUFOX_AVAILABLE = True
+except ImportError:
+    CAMOUFOX_AVAILABLE = False
 
 logging.basicConfig(level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%d/%m/%Y %H:%M:%S")
@@ -188,12 +212,16 @@ _free_proxy_bad    = set() # proxies que falharam
 _free_proxy_ts     = 0     # último refresh
 _FREE_PROXY_TTL    = 1800  # refresh a cada 30 min
 
-def _validar_proxy(proxy_addr, test_url="http://httpbin.org/ip", timeout=4):
-    """Testa se um proxy está vivo. Retorna True se responde em tempo."""
+def _validar_proxy(proxy_addr, test_url="http://httpbin.org/ip", timeout=3):
+    """Testa proxy com curl_cffi (mais rápido e difícil de bloquear)."""
+    px = {"http": f"http://{proxy_addr}", "https": f"http://{proxy_addr}"}
     try:
-        r = requests.get(test_url, timeout=timeout,
-            proxies={"http": f"http://{proxy_addr}", "https": f"http://{proxy_addr}"},
-            headers={"User-Agent": "Mozilla/5.0"}, verify=False)
+        if CURL_CFFI_AVAILABLE:
+            r = cffi_requests.get(test_url, timeout=timeout, impersonate="chrome120",
+                                  proxies=px, verify=False)
+        else:
+            r = requests.get(test_url, timeout=timeout, proxies=px,
+                             headers={"User-Agent":"Mozilla/5.0"}, verify=False)
         return r.status_code == 200
     except Exception:
         return False
@@ -298,10 +326,14 @@ def _try_free_proxy(url, timeout=15):
         tried += 1
         try:
             t0 = time.time()
-            r = requests.get(url, timeout=timeout,
-                proxies={"http": f"http://{proxy_addr}",
-                         "https": f"http://{proxy_addr}"},
-                headers=random_headers(), verify=False)
+            proxies_dict = {"http": f"http://{proxy_addr}",
+                            "https": f"http://{proxy_addr}"}
+            if CURL_CFFI_AVAILABLE:
+                r = cffi_requests.get(url, timeout=timeout, impersonate="chrome120",
+                    proxies=proxies_dict, headers=random_headers(), verify=False)
+            else:
+                r = requests.get(url, timeout=timeout,
+                    proxies=proxies_dict, headers=random_headers(), verify=False)
             ms = int((time.time()-t0)*1000)
             if r.status_code == 200 and len(r.text) > 500:
                 _record_provider("direto", True, ms)
@@ -669,9 +701,32 @@ def proxied_get(url, render=True, _recursion=0, **kwargs):
     if _recursion > 2:
         _r=requests.models.Response(); _r.status_code=0; _r._content=b""; return _r
     global _proxy_counter
-    # 0. Tenta direto primeiro (sem custo)
+    # 0. Tenta direto com stack anti-deteção progressiva
+    t0 = time.time()
+
+    # 0a. curl_cffi — impersonates Chrome TLS fingerprint (mais difícil de detectar)
+    if CURL_CFFI_AVAILABLE:
+        try:
+            r0 = cffi_requests.get(url, timeout=8, impersonate="chrome120",
+                                   headers=random_headers(), verify=False)
+            if r0.status_code == 200 and len(r0.text) > 1000:
+                _record_provider("direto", True, int((time.time()-t0)*1000))
+                return r0
+        except Exception:
+            pass
+
+    # 0b. cloudscraper — bypass Cloudflare JS challenges
+    if CLOUDSCRAPER_AVAILABLE and _cloudscraper:
+        try:
+            r0 = _cloudscraper.get(url, timeout=10, headers=random_headers())
+            if r0.status_code == 200 and len(r0.text) > 1000:
+                _record_provider("direto", True, int((time.time()-t0)*1000))
+                return r0
+        except Exception:
+            pass
+
+    # 0c. requests normal (fallback)
     try:
-        t0 = time.time()
         r0 = requests.get(url, timeout=8, headers=random_headers(), verify=False)
         if r0.status_code == 200 and len(r0.text) > 1000:
             _record_provider("direto", True, int((time.time()-t0)*1000))
