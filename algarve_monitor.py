@@ -13,8 +13,9 @@ Novidades v4:
   8. Histórico de visitas com notas
 """
 
-import os, re, time, json, random, logging, smtplib, schedule, threading
-from urllib.parse import urljoin
+import os, re, time, json, random, logging, schedule, threading
+from collections import deque, defaultdict as _dd, OrderedDict
+from urllib.parse import urljoin, urlparse as _urlparse
 import hashlib, secrets, functools
 import requests
 import urllib3
@@ -35,23 +36,23 @@ def safe_soup(html, fonte="?"):
     if not html:
         return None
     if not isinstance(html, str):
-        log.debug(f"safe_soup [{fonte}]: tipo inválido {type(html)}")
+        logging.getLogger("algarve-monitor").debug(f"safe_soup [{fonte}]: tipo inválido {type(html)}")
         return None
     stripped = html.strip()
     # URL em vez de HTML
     if stripped.startswith(("http://","https://")) and len(stripped) < 500:
-        log.warning(f"safe_soup [{fonte}]: recebido URL em vez de HTML: {stripped[:80]}")
+        logging.getLogger("algarve-monitor").warning(f"safe_soup [{fonte}]: recebido URL em vez de HTML: {stripped[:80]}")
         return None
     # Caminho de ficheiro
     if stripped.startswith(("/","./","../")) and "\n" not in stripped and len(stripped) < 300:
-        log.warning(f"safe_soup [{fonte}]: parece caminho de ficheiro: {stripped[:80]}")
+        logging.getLogger("algarve-monitor").warning(f"safe_soup [{fonte}]: parece caminho de ficheiro: {stripped[:80]}")
         return None
     # Muito curto para ser HTML útil
     if len(stripped) < 50:
         return None
     # Sem tags HTML
     if "<html" not in stripped.lower() and "<body" not in stripped.lower() and "<div" not in stripped.lower():
-        log.debug(f"safe_soup [{fonte}]: resposta sem tags HTML ({len(stripped)} chars)")
+        logging.getLogger("algarve-monitor").debug(f"safe_soup [{fonte}]: sem tags HTML ({len(stripped)} chars)")
         return None
     return BeautifulSoup(html, "html.parser")
 from flask import (Flask, render_template_string, jsonify, request,
@@ -63,19 +64,11 @@ try:
 except ImportError:
     PLAYWRIGHT_AVAILABLE = False
 
-try:
-    from webdriver_manager.chrome import ChromeDriverManager
-    WEBDRIVER_MANAGER_AVAILABLE = True
-except ImportError:
-    WEBDRIVER_MANAGER_AVAILABLE = False
-    ChromeDriverManager = None
-
 logging.basicConfig(level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%d/%m/%Y %H:%M:%S")
 log = logging.getLogger("algarve-monitor")
 
 # In-memory log buffer para /api/logs
-from collections import deque
 _log_buffer = deque(maxlen=500)
 
 class _BufferHandler(logging.Handler):
@@ -124,7 +117,11 @@ VAPID_EMAIL        = os.getenv("VAPID_EMAIL", EMAIL_REMETENTE)
 
 # Autenticação
 DASHBOARD_USERNAME = os.getenv("DASHBOARD_USERNAME", "admin")
-DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "algarve2024")
+_DASHBOARD_PASSWORD_RAW = os.getenv("DASHBOARD_PASSWORD", "")
+if not _DASHBOARD_PASSWORD_RAW:
+    _DASHBOARD_PASSWORD_RAW = secrets.token_urlsafe(16)
+    log.warning(f"⚠️  DASHBOARD_PASSWORD não definida — password temporária: {_DASHBOARD_PASSWORD_RAW}")
+DASHBOARD_PASSWORD = _DASHBOARD_PASSWORD_RAW
 SECRET_KEY         = os.getenv("SECRET_KEY", secrets.token_hex(32))
 
 PERFIS = [
@@ -175,6 +172,7 @@ def random_headers():
             "Accept": "text/html,application/xhtml+xml,*/*;q=0.8"}
 
 _proxy_counter = 0
+_scraper_metrics  = {}  # métricas da última ronda por scraper
 
 # ── Free Proxy Pool (Webshare + ProxyScrape) ─────────────────
 _free_proxy_pool   = []   # ["ip:port", ...]
@@ -204,13 +202,12 @@ def _refresh_free_proxies():
         log.debug(f"  ProxyScrape fetch error: {e}")
 
     # 2. Webshare — requer WEBSHARE_KEY no Railway (free tier: 10 proxies, 1GB/mês)
-    WKEY = os.getenv("WEBSHARE_KEY","")
-    if WKEY:
+    if WEBSHARE_KEY:
         try:
             r = requests.get(
                 "https://proxy.webshare.io/api/v2/proxy/list/"
                 "?mode=direct&page=1&page_size=25",
-                headers={"Authorization": f"Token {WKEY}"}, timeout=15)
+                headers={"Authorization": f"Token {WEBSHARE_KEY}"}, timeout=15)
             data = r.json()
             ws_proxies = [
                 f"{p['proxy_address']}:{p['port']}"
@@ -259,7 +256,8 @@ def _try_free_proxy(url, timeout=15):
     return None
 
 # ── Provider metrics ──────────────────────────────────────────
-from datetime import datetime as _dt, date as _date
+from datetime import date as _date  # _dt já importado como datetime
+_dt = datetime  # alias para retrocompatibilidade
 
 # Carrega configuração de providers (providers.json ou defaults)
 def _load_provider_config():
@@ -289,8 +287,6 @@ def _load_provider_config():
 
 PROVIDER_CONFIG = _load_provider_config()
 _PROVIDERS = list(PROVIDER_CONFIG.keys())
-_PROVIDERS = list(PROVIDER_CONFIG.keys())
-from collections import defaultdict as _dd
 
 # Global stats per provider
 _provider_data = {p: {
@@ -313,7 +309,6 @@ _provider_semaphores = {
 _domain_stats = _dd(lambda: _dd(lambda: {"success":0,"total":0,"latencies":[]}))
 
 # HTTP response cache (url → (timestamp, html))
-from collections import OrderedDict
 _http_cache     = OrderedDict()
 _http_cache_ttl = 1800  # 30 minutos
 
@@ -324,6 +319,15 @@ _proxy_fail     = {}
 _proxy_time     = {}
 _proxy_cooldown = {}
 _session_exhausted = set()  # providers esgotados NESTA sessão — nunca tentados
+_cache_lock     = threading.Lock()
+_stats_lock     = threading.Lock()
+_exhausted_lock = threading.Lock()
+
+TIMEOUT_PROXY_DEFAULT = 60
+TIMEOUT_PROXY_FAST    = 30
+TIMEOUT_DIRETO        = 15
+TIMEOUT_PREFLIGHT     = 8
+PROXY_COOLDOWN_SECONDS = 300
 
 CIRCUIT_FAIL_THRESHOLD = 5
 CIRCUIT_OPEN_SECONDS   = 1800  # 30 min
@@ -359,10 +363,12 @@ def _record_provider(provider, success, latency_ms=0, error=None, domain=None):
     d = _provider_data.get(provider)
     if not d: return
 
-    d["requests_today"] += 1
+    with _stats_lock:
+        d["requests_today"] += 1
     if success:
-        d["success_today"] += 1
-        d["consecutive_failures"] = 0  # reset circuit breaker
+        with _stats_lock:
+            d["success_today"] += 1
+            d["consecutive_failures"] = 0  # reset circuit breaker
         if d.get("circuit_half_open"):
             # Sucesso no teste — fecha o circuit breaker
             d["circuit_open"] = False
@@ -370,8 +376,9 @@ def _record_provider(provider, success, latency_ms=0, error=None, domain=None):
             d["circuit_open_until"] = None
             log.info(f"  ✅ Circuit breaker fechado: {provider}")
     else:
-        d["consecutive_failures"] = d.get("consecutive_failures", 0) + 1
-        if error: d["last_error"] = error
+        with _stats_lock:
+            d["consecutive_failures"] = d.get("consecutive_failures", 0) + 1
+            if error: d["last_error"] = error
         thresholds = CIRCUIT_THRESHOLDS.get(provider, {})
         fail_limit = thresholds.get("fail", CIRCUIT_FAIL_THRESHOLD)
         open_secs  = thresholds.get("open_secs", CIRCUIT_OPEN_SECONDS)
@@ -384,18 +391,19 @@ def _record_provider(provider, success, latency_ms=0, error=None, domain=None):
             log.warning(f"  ⚡ Circuit breaker ABERTO: {provider} "
                         f"({d['consecutive_failures']} falhas) — pausa {pause_min}min")
 
-    if latency_ms: d["latencies"] = (d["latencies"] + [latency_ms])[-100:]
-    _proxy_stats[provider] = _proxy_stats.get(provider, 0) + (1 if success else 0)
+    with _stats_lock:
+        if latency_ms: d["latencies"] = (d["latencies"] + [latency_ms])[-100:]
+        _proxy_stats[provider] = _proxy_stats.get(provider, 0) + (1 if success else 0)
 
     # Per-domain stats
     if domain:
-        ds = _domain_stats[domain][provider]
-        ds["total"] += 1
-        if success: ds["success"] += 1
-        if latency_ms: ds["latencies"] = (ds["latencies"] + [latency_ms])[-20:]
-        # Track items found (passed from scraper context if available)
-        if hasattr(record_provider, '_last_items'):
-            ds["items_total"] = ds.get("items_total", 0) + record_provider._last_items
+        with _stats_lock:
+            ds = _domain_stats[domain][provider]
+            ds["total"] += 1
+            if success: ds["success"] += 1
+            if latency_ms: ds["latencies"] = (ds["latencies"] + [latency_ms])[-20:]
+            if hasattr(_record_provider, '_last_items'):
+                ds["items_total"] = ds.get("items_total", 0) + _record_provider._last_items
 
 def _circuit_allows(provider):
     """Verifica se o circuit breaker permite usar este provider."""
@@ -458,6 +466,8 @@ def _is_exhausted(provider):
     if _date.today() >= until:
         d["cooldown_until"] = None; d["exhausted_at"] = None
         if provider in _proxy_exhausted: del _proxy_exhausted[provider]
+        _proxy_cooldown.pop(provider, None)
+        _session_exhausted.discard(provider)
         log.info(f"  ✅ {provider} resetou — novo ciclo")
         return False
     return True
@@ -508,19 +518,21 @@ def provider_status_dict():
     return out
 
 def cache_get(url):
-    if url in _http_cache:
-        ts, data = _http_cache[url]
-        if time.time() - ts < _http_cache_ttl:
-            return data
+    with _cache_lock:
+        if url in _http_cache:
+            ts, data = _http_cache[url]
+            if time.time() - ts < _http_cache_ttl:
+                return data
+            del _http_cache[url]
     return None
 
 def cache_set(url, data):
-    # OrderedDict LRU — move_to_end é O(1)
-    if url in _http_cache:
-        _http_cache.move_to_end(url)
-    _http_cache[url] = (time.time(), data)
-    while len(_http_cache) > 200:
-        _http_cache.popitem(last=False)  # remove mais antigo O(1)
+    with _cache_lock:
+        if url in _http_cache:
+            _http_cache.move_to_end(url)
+        _http_cache[url] = (time.time(), data)
+        while len(_http_cache) > 200:
+            _http_cache.popitem(last=False)
 
 def registar_proxy_resultado(proxy, sucesso, tempo_ms):
     """Regista resultado de um pedido para o proxy manager."""
@@ -544,13 +556,10 @@ def registar_proxy_resultado(proxy, sucesso, tempo_ms):
     if len(_proxy_time[proxy]) > 20:
         _proxy_time[proxy] = _proxy_time[proxy][-20:]
 
-def proxied_get(url, render=True, **kwargs):
-    """
-    Rotação automática entre todos os proxies disponíveis:
-    ScraperAPI → ZenRows → ScrapingBee → ScrapingAnt → Crawlbase → Scrape.do → direto
-    Usa apenas os que têm SCRAPINGANT_KEY configurada no Railway.
-    Usa apenas os que têm chave configurada.
-    """
+def proxied_get(url, render=True, _recursion=0, **kwargs):
+    """Rotação automática de providers: ScraperAPI→ZenRows→ScrapingBee→Crawlbase→Scrape.do→direto."""
+    if _recursion > 2:
+        _r=requests.models.Response(); _r.status_code=0; _r._content=b""; return _r
     global _proxy_counter
     # 0. Tenta direto primeiro (sem custo)
     try:
@@ -586,8 +595,8 @@ def proxied_get(url, render=True, **kwargs):
     proxies = [p for _, p in available]
 
     if not proxies:
-        _proxy_stats["direto"] += 1
-        return requests.get(url, headers=random_headers(), timeout=15)
+        _proxy_stats["direto"] = _proxy_stats.get("direto", 0) + 1
+        return requests.get(url, headers=random_headers(), timeout=TIMEOUT_DIRETO)
 
     # Check cache first
     cached = cache_get(url)
@@ -601,12 +610,17 @@ def proxied_get(url, render=True, **kwargs):
                           and not _is_exhausted(p)
                           and time.time() > _proxy_cooldown.get(p, 0)]
     if not proxies_ativos_now:
-        # All in cooldown — use the one with least cooldown time
-        proxies_ativos_now = sorted(proxies, key=lambda p: _proxy_cooldown.get(p, 0))[:1]
+        _fb = [p for p in proxies if p not in _session_exhausted and not _is_exhausted(p)]
+        if _fb:
+            proxies_ativos_now = sorted(_fb, key=lambda p: _proxy_cooldown.get(p,0))[:1]
+        else:
+            try:
+                return requests.get(url, headers=random_headers(), timeout=15, verify=False)
+            except:
+                _r=requests.models.Response(); _r.status_code=0; _r._content=b""; return _r
 
     # Score por domínio × provider (com confiança)
-    from urllib.parse import urlparse as _up
-    _domain = _up(url).netloc.replace("www.","")
+    _domain = _urlparse(url).netloc.replace("www.","")
 
     def provider_score(p):
         score, conf, samples = _domain_provider_score(_domain, p)
@@ -643,7 +657,7 @@ def proxied_get(url, render=True, **kwargs):
         if proxy == "scraperapi":
             rp = "&render=true&wait=3000" if render else ""
             api = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={requests.utils.quote(url)}{rp}"
-            return requests.get(api, timeout=60, headers=random_headers())
+            result = requests.get(api, timeout=60, headers=random_headers())
 
         elif proxy == "zenrows":
             with _provider_semaphores.get("zenrows", threading.Semaphore(3)):
@@ -660,13 +674,13 @@ def proxied_get(url, render=True, **kwargs):
                 "render_js": "true" if render else "false",
                 "premium_proxy": "true",
             }
-            return requests.get("https://app.scrapingbee.com/api/v1/", params=params, timeout=60)
+            result = requests.get("https://app.scrapingbee.com/api/v1/", params=params, timeout=60)
 
         elif proxy == "crawlbase":
             # Crawlbase — suporta JS com &ajax_wait=true
             ajax = "&ajax_wait=true&page_wait=3000" if render else ""
             api = f"https://api.crawlbase.com/?token={CRAWLBASE_KEY}&url={requests.utils.quote(url)}{ajax}"
-            return requests.get(api, timeout=60, headers=random_headers())
+            result = requests.get(api, timeout=60, headers=random_headers())
 
         elif proxy == "scrapingant":
             # ScrapingAnt — só usa se for o único provider disponível
@@ -702,8 +716,23 @@ def proxied_get(url, render=True, **kwargs):
             api = f"https://api.scrape.do?token={SCRAPEDO_KEY}&url={requests.utils.quote(url)}{rp}"
             result = requests.get(api, timeout=60, headers=random_headers())
 
-        _record_provider(proxy, True, int((time.time()-t0)*1000), domain=_domain)
-        registar_proxy_resultado(proxy, True, int((time.time()-t0)*1000))
+        ms = int((time.time()-t0)*1000)
+        if hasattr(result,'text') and result.text and len(result.text) < 500:
+            msg = result.text[:200]
+            for _pv, _pts in EXHAUSTED_PATTERNS:
+                if _pv == proxy and any(_p.lower() in msg.lower() for _p in _pts):
+                    log.warning(f"    proxy resposta bloqueada ({len(result.text)} chars): {msg[:100]}")
+                    _record_provider(proxy, False, ms, error="quota", domain=_domain)
+                    _mark_exhausted(proxy, msg)
+                    _next = [p for p in proxies if p != proxy
+                             and p not in _session_exhausted and not _is_exhausted(p)]
+                    if _next:
+                        return proxied_get(url, render=render, _recursion=_recursion+1)
+                    break
+        _record_provider(proxy, True, ms, domain=_domain)
+        registar_proxy_resultado(proxy, True, ms)
+        if result and hasattr(result, 'text') and len(result.text) > 1000:
+            cache_set(url, result)
         return result
     except Exception as e:
         _record_provider(proxy, False, int((time.time()-t0)*1000),
@@ -848,32 +877,6 @@ def init_db():
                     nota        TEXT DEFAULT '',
                     avaliacao   INTEGER CHECK(avaliacao BETWEEN 1 AND 5),
                     criado_em   TIMESTAMP DEFAULT NOW()
-                );
-                CREATE TABLE IF NOT EXISTS price_history (
-                id              SERIAL PRIMARY KEY,
-                imovel_id       TEXT NOT NULL,
-                preco           INTEGER NOT NULL,
-                registado_em    TIMESTAMPTZ DEFAULT NOW()
-            );
-            CREATE INDEX IF NOT EXISTS idx_ph_imovel ON price_history(imovel_id);
-
-            -- Availability tracking
-            ALTER TABLE imoveis
-                ADD COLUMN IF NOT EXISTS first_seen  TIMESTAMPTZ DEFAULT NOW(),
-                ADD COLUMN IF NOT EXISTS last_seen   TIMESTAMPTZ DEFAULT NOW(),
-                ADD COLUMN IF NOT EXISTS dias_online INTEGER DEFAULT 0,
-                ADD COLUMN IF NOT EXISTS preco_inicial INTEGER;
-
-            CREATE TABLE IF NOT EXISTS scraper_stats (
-                    id          SERIAL PRIMARY KEY,
-                    fonte       TEXT NOT NULL,
-                    perfil_nome TEXT,
-                    started_at  TIMESTAMP DEFAULT NOW(),
-                    duration_ms INTEGER DEFAULT 0,
-                    items       INTEGER DEFAULT 0,
-                    success     BOOLEAN DEFAULT FALSE,
-                    proxy       TEXT,
-                    erro        TEXT
                 );
                 CREATE TABLE IF NOT EXISTS perfis_config (
                     id           SERIAL PRIMARY KEY,
@@ -1227,7 +1230,10 @@ def guardar_imovel(item, perfil_nome, score):
                   json.dumps(item.get("detalhes_extra",{}))))
         conn.commit()
 
-def marcar_removidos(ids_vistos, perfil_nome):
+def marcar_removidos(ids_vistos, perfil_nome, total_encontrados=0):
+    if 0 < total_encontrados < 10:
+        log.warning(f"  Só {total_encontrados} items — a saltar marcar_removidos")
+        return []
     removidos = []
     with get_db() as conn:
         with conn.cursor(row_factory=psycopg_rows.dict_row) as cur:
@@ -1290,11 +1296,10 @@ def verificar_scrapers_com_falha():
         msg["To"]   = EMAIL_DESTINATARIO
         msg.attach(MIMEText(f"<pre>{linhas}</pre>","html"))
         try:
-            ok, motivo = _send_via_resend("assunto", "html", EMAIL_DESTINATARIO)
-            if ok:
-                log.info("✉  Email enviado via Resend")
-            else:
-                log.error(f"Email alerta falha: {motivo}")
+            _html_body = f"<pre>{linhas}</pre>"
+            ok, motivo = _send_via_resend(assunto, _html_body, EMAIL_DESTINATARIO)
+            if ok: log.info("✉  Email enviado via Resend")
+            else: log.error(f"Email alerta falha: {motivo}")
             log.warning(f"⚠️  Alerta de scrapers com falha enviado.")
         except Exception as e:
             log.error(f"Email alerta falha: {e}")
@@ -1377,7 +1382,10 @@ def get_stats():
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM imoveis WHERE disponivel=TRUE"); total=cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM imoveis WHERE criado_em>NOW()-INTERVAL '24 hours'"); ult=cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM historico_precos"); baixas=cur.fetchone()[0]
+            try:
+                cur.execute("SELECT COUNT(*) FROM historico_precos"); baixas=cur.fetchone()[0]
+            except Exception:
+                conn.rollback(); baixas=0
             cur.execute("SELECT COUNT(*) FROM imoveis WHERE disponivel=FALSE"); rem=cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM imoveis WHERE reativado_em IS NOT NULL"); reat=cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM imoveis WHERE favorito=TRUE"); favs=cur.fetchone()[0]
@@ -1456,7 +1464,7 @@ def extrair_detalhes_idealista(link):
         for item in soup.select(".details-property_features li, .feature"):
             txt = item.get_text(strip=True)
             if m := re.search(r"(\d+)\s*m[²2]",txt,re.I): detalhes["area_m2"]=int(m.group(1))
-            if m := re.search(r"(\d{4})",txt) and "constru" in txt.lower(): detalhes["ano_construcao"]=int(m.group(1))
+            if (m := re.search(r"(\d{4})",txt)) and "constru" in txt.lower(): detalhes["ano_construcao"]=int(m.group(1))
         # Descrição
         desc = soup.select_one(".comment .description, #description")
         if desc: detalhes["descricao"] = desc.get_text(strip=True)[:500]
@@ -1536,7 +1544,6 @@ def enriquecer_com_detalhes(item):
 def extrair_referencia(titulo):
     """Extrai referência do imóvel do título (ex: REF: 12345, T/123456)."""
     if not titulo: return None
-    import re
     m = re.search(r'(?:ref[:\s#.]+|t/)(\w{4,})', titulo, re.I)
     return m.group(1).upper() if m else None
 
@@ -1634,7 +1641,15 @@ def deduplicar(items):
 _driver = None
 
 def get_driver():
+    """Selenium driver — apenas para fallback. Playwright é o método principal."""
     global _driver
+    try:
+        from selenium import webdriver
+        from selenium.webdriver.chrome.options import Options
+        from selenium.webdriver.chrome.service import Service
+    except ImportError:
+        log.warning("Selenium não instalado — usar Playwright")
+        return None
     if _driver is not None:
         try: _ = _driver.title; return _driver
         except: _driver = None
@@ -1692,7 +1707,6 @@ def get_driver():
         log.info(f"ChromeDriver: {chromedriver_bin}")
     else:
         log.warning("ChromeDriver não encontrado, a usar webdriver-manager")
-        svc = Service(ChromeDriverManager().install()) if ChromeDriverManager else Service("/usr/bin/chromedriver")
 
     _driver = webdriver.Chrome(service=svc, options=opts)
     _driver.set_page_load_timeout(30)
@@ -1784,11 +1798,15 @@ TITULOS_GENERICOS = [
     "facebook","instagram","linkedin","twitter","youtube",
 ]
 
-def validar(item, perfil):
-    """Valida imóvel contra filtros do perfil."""
+def validar(item, perfil, _log_descarte=False):
+    """Valida imóvel contra filtros do perfil. _log_descarte=True loga o motivo."""
     titulo    = (item.get("titulo") or "").lower().strip()
     preco_str = (item.get("preco") or "").lower()
     link      = (item.get("link") or "").lower()
+    def _rej(motivo):
+        if _log_descarte:
+            log.info(f"    DESCARTADO [{motivo}] — {item.get('fonte','?')} | {item.get('titulo','')[:40]}")
+        return False
 
     # Excluir redes sociais e links de navegação
     if any(d in link for d in DOMINIOS_EXCLUIR):
@@ -1884,22 +1902,23 @@ def paginar_playwright(url_tpl, parse_fn, nome="?"):
     """Usa Playwright para scraping — fallback quando proxies falham."""
     if not PLAYWRIGHT_AVAILABLE: return [], 0
     todos=[]; pag=1
-    # Usa browser partilhado se disponível
-    _pb = getattr(scrape_playwright_html, '_shared_browser', None)
-
     for pag in range(1, min(3, MAX_PAGINAS)+1):  # max 3 páginas com Playwright
         url = url_tpl.format(page=pag)
         with _playwright_semaphore:
             try:
-                if _pb and _pb.is_connected():
-                    html = _pw_get_html(_pb, nome, url, "[class*='property'],article,.card")
-                else:
-                    with sync_playwright() as p:
-                        b = p.chromium.launch(headless=True, executable_path="/usr/bin/chromium",
-                            args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu",
-                                  "--single-process"])
-                        html = _pw_get_html(b, nome, url, "[class*='property'],article,.card")
-                        b.close()
+                with sync_playwright() as p:
+                    browser = p.chromium.launch(
+                        headless=True, executable_path="/usr/bin/chromium",
+                        args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu",
+                              "--disable-blink-features=AutomationControlled"])
+                    ctx = browser.new_context(
+                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                        viewport={"width":1920,"height":1080}, locale="pt-PT")
+                    page = ctx.new_page()
+                    page.goto(url, wait_until="domcontentloaded", timeout=20000)
+                    page.wait_for_timeout(3000)
+                    html = page.content()
+                    browser.close()
                 items = parse_fn(html)
                 log.info(f"    playwright pag {pag}: {len(items)} items")
                 if not items: break
@@ -2285,17 +2304,20 @@ def scrape_sothebys(p):
     items = []
     with _playwright_semaphore:
         try:
-            _sb = getattr(scrape_playwright_html, '_shared_browser', None)
-            if _sb and _sb.is_connected():
-                html = _pw_get_html(_sb, "Sotheby's", "https://www.sothebysrealty.pt/imoveis/compra",
-                                    ".property-card,article,a[href*='/property/']")
-            else:
-                with sync_playwright() as pw:
-                    b = pw.chromium.launch(headless=True, executable_path="/usr/bin/chromium",
-                        args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu","--single-process"])
-                    html = _pw_get_html(b, "Sotheby's", "https://www.sothebysrealty.pt/imoveis/compra",
-                                        ".property-card,article")
-                    b.close()
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch(
+                    headless=True, executable_path="/usr/bin/chromium",
+                    args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu"])
+                ctx = browser.new_context(
+                    ignore_https_errors=True,
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    locale="pt-PT")
+                page = ctx.new_page()
+                page.goto("https://www.sothebysrealty.pt/imoveis/compra",
+                          wait_until="domcontentloaded", timeout=20000)
+                page.wait_for_timeout(3000)
+                html = page.content()
+                browser.close()
             soup = safe_soup(html, "Sotheby's")
             if soup:
                 for card in soup.select("[class*='property'],[class*='listing'],article"):
@@ -2420,17 +2442,22 @@ def scrape_a1algarve(p):
 # ── SCRAPERS COM PLAYWRIGHT (sites que bloqueiam requests mas não browser) ──
 
 # Semáforo para limitar Playwright a 2 instâncias simultâneas
-import threading
-_playwright_semaphore = threading.Semaphore(2)
+_playwright_semaphore = threading.Semaphore(1)  # max 1 browser simultâneo
 
-def _pw_get_html(browser, nome, url, sel):
-    """Abre uma página no browser partilhado e devolve o HTML."""
+def _pw_open_page(nome, url, sel):
+    """Abre página no browser Playwright partilhado (new_context, não new browser)."""
+    _b = getattr(scrape_playwright_html, '_shared_browser', None)
     ctx = None
     try:
-        ctx = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120",
-            viewport={"width":1920,"height":1080}, locale="pt-PT")
-        page = ctx.new_page()
+        if _b and _b.is_connected():
+            ctx = _b.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120",
+                viewport={"width":1920,"height":1080}, locale="pt-PT")
+            page = ctx.new_page()
+        else:
+            # Fallback: launch temporário (não deve acontecer em regime normal)
+            log.warning(f"  {nome}: browser partilhado não disponível — a criar temporário")
+            raise RuntimeError("no_shared_browser")
         page.goto(url, wait_until="domcontentloaded", timeout=60000)
         try: page.wait_for_selector(sel, timeout=8000)
         except: pass
@@ -2443,10 +2470,22 @@ def _pw_get_html(browser, nome, url, sel):
         html = page.content()
         log.info(f"    {nome}: {len(html):,} chars HTML")
         if len(html) < 5000:
-            log.warning(f"    {nome}: HTML pequeno ({len(html)} chars) — SPA pode não ter renderizado")
+            log.warning(f"    {nome}: HTML pequeno ({len(html)} chars) — SPA?")
+        return html
+    except RuntimeError:
+        # Fallback com browser próprio
+        with sync_playwright() as _p:
+            _b2 = _p.chromium.launch(headless=True, executable_path="/usr/bin/chromium",
+                args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu","--single-process"])
+            _ctx = _b2.new_context(user_agent="Mozilla/5.0 Chrome/120", locale="pt-PT")
+            _pg  = _ctx.new_page()
+            _pg.goto(url, wait_until="domcontentloaded", timeout=60000)
+            _pg.wait_for_timeout(3000)
+            html = _pg.content()
+            _ctx.close(); _b2.close()
         return html
     except Exception as e:
-        log.error(f"    {nome} _pw_get_html: {e}")
+        log.error(f"  {nome} _pw_open_page: {e}")
         return ""
     finally:
         if ctx:
@@ -2454,32 +2493,14 @@ def _pw_get_html(browser, nome, url, sel):
             except: pass
 
 def scrape_playwright_html(nome, url, sel, zona, perfil):
-    """Scraper genérico usando Playwright para sites React/SPA.
-    Máximo 2 browsers simultâneos para evitar crash por memória."""
+    """Scraper Playwright — usa browser partilhado (1 launch por ronda)."""
     if not PLAYWRIGHT_AVAILABLE:
         log.warning(f"{nome}: Playwright não disponível")
         return [], 0
     items = []
     with _playwright_semaphore:
         try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(
-                    headless=True, executable_path="/usr/bin/chromium",
-                    args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu",
-                          "--disable-blink-features=AutomationControlled"]
-                )
-                ctx = browser.new_context(
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    viewport={"width":1920,"height":1080}, locale="pt-PT"
-                )
-                page = ctx.new_page()
-                page.goto(url, wait_until="domcontentloaded", timeout=20000)
-                page.wait_for_timeout(3000)
-                for pos in [0.3, 0.6, 1.0]:
-                    page.evaluate(f"window.scrollTo(0, document.body.scrollHeight*{pos})")
-                    page.wait_for_timeout(1000)
-                html = page.content()
-                browser.close()
+            html = _pw_open_page(nome, url, sel)
             soup = safe_soup(html, nome)
             if not soup:
                 return [], 0
@@ -2859,15 +2880,9 @@ def correr_scraper(args):
         log.error(f"    ❌ {nome}: {e} ({tempo}ms)")
         anuncios = []
     registar_log_scraper(nome, perfil["nome"], total, 0, pags, erros, tempo)
-    # Also write to scraper_stats for the health dashboard
+    # Actualiza scraper_stats (usa função com schema correcto)
     try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO scraper_stats(fonte, perfil_nome, duration_ms, items, success, erro)
-                    VALUES(%s,%s,%s,%s,%s,%s)
-                """, (nome, perfil["nome"], tempo, total, total>0, erros or None))
-            conn.commit()
+        _update_scraper_stat(nome, total)
     except Exception: pass
     return anuncios
 
@@ -2884,17 +2899,16 @@ def verificar_perfil(perfil):
         skipped = len(SCRAPERS) - len(args)
         log.info(f"  ⏭ {skipped} scrapers em pausa (broken) — a saltar")
     
-    # Separa scrapers: HTTP (paralelos) vs Playwright (sequenciais com browser partilhado)
-    PW_SCRAPERS_NAMES = {
+    _PW_NOMES = {
         "Boto Properties","Sunpoint Properties","Algarve Unique Properties",
         "Garvetur","Barra Prime","Mimosa Properties","Sortami","Vernon Algarve",
         "Algarve Dream Property","Your Luxury Property","Dils Portugal",
         "D'Alma Portuguesa","Sotheby's",
     }
-    args_http = [a for a in args if a[0] not in PW_SCRAPERS_NAMES]
-    args_pw   = [a for a in args if a[0] in PW_SCRAPERS_NAMES]
+    args_http = [a for a in args if a[0] not in _PW_NOMES]
+    args_pw   = [a for a in args if a[0] in _PW_NOMES]
+    log.info(f"  HTTP: {len(args_http)} scrapers | Playwright: {len(args_pw)} scrapers")
 
-    # Corre scrapers HTTP em paralelo (seguros sem browser)
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = {executor.submit(correr_scraper, a): a[0] for a in args_http}
         for future in as_completed(futures):
@@ -2905,16 +2919,14 @@ def verificar_perfil(perfil):
             except Exception as e:
                 log.error(f"    {nome} thread error: {e}")
 
-    # Corre scrapers Playwright SEQUENCIALMENTE com um único browser partilhado
     if args_pw and PLAYWRIGHT_AVAILABLE:
-        log.info(f"  🌐 A iniciar browser Playwright para {len(args_pw)} scrapers...")
+        log.info(f"  🌐 Browser Playwright — {len(args_pw)} scrapers sequenciais")
         try:
             with sync_playwright() as _spw:
                 _browser = _spw.chromium.launch(
                     headless=True, executable_path="/usr/bin/chromium",
                     args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu",
                           "--single-process","--disable-blink-features=AutomationControlled"])
-                # Partilha o browser com scrape_playwright_html via atributo de função
                 scrape_playwright_html._shared_browser = _browser
                 for a in args_pw:
                     try:
@@ -2924,16 +2936,12 @@ def verificar_perfil(perfil):
                         log.error(f"    {a[0]} PW error: {e}")
                 scrape_playwright_html._shared_browser = None
                 _browser.close()
-            log.info("  🌐 Browser Playwright fechado")
+                log.info("  🌐 Browser fechado")
         except Exception as e:
-            log.error(f"  Playwright browser error: {e}")
-            # Fallback: corre PW scrapers sem browser partilhado
+            log.error(f"  Playwright error: {e}")
             for a in args_pw:
-                try:
-                    resultado = correr_scraper(a)
-                    todos_raw.extend(resultado)
-                except Exception as ex:
-                    log.error(f"    {a[0]} fallback error: {ex}")
+                try: todos_raw.extend(correr_scraper(a))
+                except: pass
 
     # Enriquece novos itens com detalhes completos (amostra de 10 por ronda para não sobrecarregar)
     todos=deduplicar(todos_raw)
@@ -2959,7 +2967,7 @@ def verificar_perfil(perfil):
             if disp_ant==False:
                 marcar_reativado(item["id"]); reativados.append(item)
 
-    removidos=marcar_removidos(ids_ronda,perfil["nome"])
+    removidos=marcar_removidos(ids_ronda,perfil["nome"],total_encontrados=len(todos))
     atualizar_snapshot_mercado(perfil["nome"])
     log.info(f"  N:{len(novos)} B:{len(baixas)} R:{len(reativados)} Rem:{len(removidos)}")
 
@@ -2998,8 +3006,9 @@ def _preflight_providers():
     """Testa cada provider ANTES de lançar scrapers em paralelo.
     Evita race condition onde 49 threads tentam ZenRows em simultâneo."""
     global _preflight_done
-    if _preflight_done: return
-    _preflight_done = True
+    with _preflight_lock:
+        if _preflight_done: return
+        # Marca como done APENAS APÓS os testes (não antes)
     TEST_URL = "https://www.example.com"
     log.info("  Preflight providers...")
     for prov, key, test_fn in [
@@ -3030,6 +3039,8 @@ def _preflight_providers():
                 log.info(f"    {prov}: ✅ OK ({r.status_code})")
         except Exception as e:
             log.debug(f"    {prov} preflight: {e}")
+    with _preflight_lock:
+        _preflight_done = True  # marca como concluído
 
 def verificar():
     log.info("="*55)
@@ -3060,11 +3071,12 @@ def verificar():
                     <p>Sem ZenRows nem ScrapingBee configurados.</p>
                     <p>O monitor está <b>pausado</b> até ao reset mensal (dia 1).</p>
                     </body></html>""", "html"))
-                    ok, motivo = _send_via_resend("assunto", "html", EMAIL_DESTINATARIO)
-                    if ok:
-                        log.info("✉  Email enviado via Resend")
-                    else:
-                        log.error(f"Email alerta falha: {motivo}")
+                    _assunto = msg["Subject"]
+                    _html = "".join(p.get_payload(decode=True).decode("utf-8","replace")
+                                    for p in msg.get_payload() if hasattr(p,"get_payload"))
+                    ok, motivo = _send_via_resend(_assunto, _html, EMAIL_DESTINATARIO)
+                    if ok: log.info("✉  Email enviado via Resend")
+                    else: log.error(f"Email alerta falha: {motivo}")
                 except Exception as e:
                     log.error(f"Email aviso créditos: {e}")
                 return
@@ -3085,11 +3097,12 @@ def verificar():
                 <p>Usados: <b>{used}/{limit}</b> ({pct}%)</p>
                 <p>A continuar com ZenRows e ScrapingBee como backup.</p>
                 </body></html>""", "html"))
-                ok, motivo = _send_via_resend("assunto", "html", EMAIL_DESTINATARIO)
-                if ok:
-                    log.info("✉  Email enviado via Resend")
-                else:
-                    log.error(f"Email alerta falha: {motivo}")
+                _assunto = msg["Subject"]
+                _html = "".join(p.get_payload(decode=True).decode("utf-8","replace")
+                                for p in msg.get_payload() if hasattr(p,"get_payload"))
+                ok, motivo = _send_via_resend(_assunto, _html, EMAIL_DESTINATARIO)
+                if ok: log.info("✉  Email enviado via Resend")
+                else: log.error(f"Email alerta falha: {motivo}")
                 log.info("Alerta 80% enviado por email.")
             except Exception as e:
                 log.error(f"Email alerta 80%: {e}")
@@ -3201,8 +3214,13 @@ LOGIN_HTML = """<!DOCTYPE html>
 </body>
 </html>"""
 
-DASHBOARD_HTML = open(os.path.join(os.path.dirname(__file__), "dashboard.html")).read() if os.path.exists(
-    os.path.join(os.path.dirname(__file__), "dashboard.html")) else "<!-- dashboard.html not found -->"
+_dashboard_path = os.path.join(os.path.dirname(__file__), "dashboard.html")
+DASHBOARD_HTML = ""
+if os.path.exists(_dashboard_path):
+    with open(_dashboard_path) as _f:
+        DASHBOARD_HTML = _f.read()
+else:
+    DASHBOARD_HTML = "<!-- dashboard.html not found -->"
 
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
@@ -3471,7 +3489,10 @@ def api_teste_email():
         <p>O Monitor de Imóveis está configurado corretamente.</p>
         <p style="color:#888;font-size:12px">{datetime.now().strftime('%d/%m/%Y %H:%M')}</p>
         </body></html>""", "html"))
-        ok, motivo = _send_via_resend("assunto", "html", email_dest)
+        _assunto = msg["Subject"]
+        _html_body = "".join(p.get_payload(decode=True).decode("utf-8","replace")
+                             for p in msg.get_payload() if hasattr(p,"get_payload"))
+        ok, motivo = _send_via_resend(_assunto, _html_body, email_dest)
         if ok:
             log.info("✉  Email enviado via Resend")
         else:
@@ -3507,11 +3528,12 @@ def verificar_limite_scraperapi():
             <p>Usados: <b>{used}/{limit}</b> pedidos ({pct}%)</p>
             <p>Considera fazer upgrade em <a href="https://scraperapi.com">scraperapi.com</a></p>
             </body></html>""", "html"))
-            ok, motivo = _send_via_resend("assunto", "html", EMAIL_DESTINATARIO)
-            if ok:
-                log.info("✉  Email enviado via Resend")
-            else:
-                log.error(f"Email alerta falha: {motivo}")
+            _assunto = msg["Subject"]
+            _html_body = "".join(p.get_payload(decode=True).decode("utf-8","replace")
+                                 for p in msg.get_payload() if hasattr(p,"get_payload"))
+            ok, motivo = _send_via_resend(_assunto, _html_body, EMAIL_DESTINATARIO)
+            if ok: log.info("✉  Email enviado via Resend")
+            else: log.error(f"Email alerta falha: {motivo}")
             log.warning(f"⚠️ Alerta ScraperAPI enviado ({pct}%)")
         return {"used": used, "limit": limit, "pct": pct}
     except Exception as e:
@@ -3594,7 +3616,7 @@ def api_price_history(imovel_id):
             hist = [{"preco": r[0], "data": r[1].strftime("%d/%m/%Y")} for r in rows]
             # Current price
             cur = conn.execute(
-                "SELECT preco_valor, preco_inicial, first_seen, dias_online FROM imoveis WHERE url=%s",
+                "SELECT preco_valor, preco_inicial, first_seen, dias_online FROM imoveis WHERE id=%s",
                 (imovel_id,)).fetchone()
             return jsonify({
                 "historico": hist,
@@ -3633,7 +3655,7 @@ def api_domain_stats():
 @app.route("/api/logs")
 def api_logs():
     """Endpoint para consulta remota de logs — protegido por API key."""
-    key = request.args.get("key","")
+    key = request.headers.get("X-API-Key") or request.args.get("key", "")
     if key != os.getenv("LOGS_API_KEY", "algarve2026logs"):
         return jsonify({"erro": "chave inválida"}), 401
     n     = int(request.args.get("n", 100))
@@ -3660,8 +3682,8 @@ def api_system_health():
     warning = sum(1 for m in metrics.values() if m.get("status")=="vazio")
     error   = sum(1 for m in metrics.values() if m.get("status")=="erro")
     providers = provider_status_dict()
-    active_p  = sum(1 for p in providers.values() if p["status"]!="cooldown")
-    cooldown_p= sum(1 for p in providers.values() if p["status"]=="cooldown")
+    active_p  = sum(1 for p in providers.values() if not p.get("exhausted") and not p.get("circuit_open"))
+    cooldown_p= sum(1 for p in providers.values() if p.get("exhausted") or p.get("circuit_open"))
     # Last run info from DB
     try:
         with get_db() as conn:
@@ -3711,11 +3733,10 @@ def api_saude():
                         SUM(sl.total) total_imoveis,
                         COUNT(*) total_rondas,
                         COUNT(*) FILTER (WHERE sl.erros != '' AND sl.erros IS NOT NULL) rondas_com_erro,
-                        ROUND(AVG(ss.duration_ms)) avg_ms,
-                        ROUND(100.0 * COUNT(*) FILTER (WHERE ss.success=TRUE) / NULLIF(COUNT(*),0)) taxa_sucesso
+                        0::INTEGER avg_ms,
+                        ROUND(100.0 * COUNT(*) FILTER (WHERE sl.total>0) / NULLIF(COUNT(*),0)) taxa_sucesso
                     FROM scraper_logs sl
-                    LEFT JOIN scraper_stats ss ON ss.fonte=sl.fonte
-                        AND ss.started_at::DATE = sl.executado_em::DATE
+                    -- (scraper_stats joined removed: schema mismatch)
                     WHERE sl.executado_em > NOW() - INTERVAL '7 days'
                     GROUP BY sl.fonte, sl.perfil_nome
                     ORDER BY sl.fonte
@@ -3857,7 +3878,6 @@ def api_status_scraper():
         # Calcular próxima execução (24h após última)
         proxima = None
         if ultima:
-            from datetime import datetime, timedelta
             try:
                 dt_ultima = datetime.fromisoformat(ultima[:19])
                 dt_proxima = dt_ultima + timedelta(hours=24)
@@ -3906,8 +3926,8 @@ if __name__=="__main__":
                    "--worker-class=gthread",
                    "--timeout=120",
                    "algarve_monitor:app"]
-            subprocess.Popen(cmd)
-            log.info(f"Dashboard (gunicorn) em http://localhost:{PORT}")
+            _gunicorn_proc = subprocess.Popen(cmd)
+            log.info(f"Dashboard (gunicorn) em http://localhost:{PORT} (pid={_gunicorn_proc.pid})")
         except Exception:
             # Fallback to Flask dev server
             app.run(host="0.0.0.0", port=PORT, use_reloader=False)
@@ -3923,5 +3943,4 @@ if __name__=="__main__":
     schedule.every(24).hours.do(geocodificar_existentes)
     log.info("A monitorizar. Ctrl+C para parar.\n")
     while True: schedule.run_pending(); time.sleep(60)
-"# v4.1" 
-"# v4.1" 
+# v4.1
