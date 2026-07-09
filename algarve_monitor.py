@@ -59,10 +59,18 @@ from flask import (Flask, render_template_string, jsonify, request,
                    session, redirect, url_for, make_response)
 # Playwright replaces Selenium for better JS rendering
 try:
-    from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+    # Patchright: fork do Playwright com anti-deteção melhorada
+    # API 100% compatível com playwright — só muda o import
+    from patchright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
     PLAYWRIGHT_AVAILABLE = True
+    log.debug("Patchright carregado (anti-deteção activa)")
 except ImportError:
-    PLAYWRIGHT_AVAILABLE = False
+    try:
+        from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+        PLAYWRIGHT_AVAILABLE = True
+        log.debug("Playwright carregado (fallback — sem anti-deteção)")
+    except ImportError:
+        PLAYWRIGHT_AVAILABLE = False
 
 logging.basicConfig(level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%d/%m/%Y %H:%M:%S")
@@ -180,15 +188,25 @@ _free_proxy_bad    = set() # proxies que falharam
 _free_proxy_ts     = 0     # último refresh
 _FREE_PROXY_TTL    = 1800  # refresh a cada 30 min
 
+def _validar_proxy(proxy_addr, test_url="http://httpbin.org/ip", timeout=4):
+    """Testa se um proxy está vivo. Retorna True se responde em tempo."""
+    try:
+        r = requests.get(test_url, timeout=timeout,
+            proxies={"http": f"http://{proxy_addr}", "https": f"http://{proxy_addr}"},
+            headers={"User-Agent": "Mozilla/5.0"}, verify=False)
+        return r.status_code == 200
+    except Exception:
+        return False
+
 def _refresh_free_proxies():
-    """Atualiza lista de proxies gratuitos de ProxyScrape e Webshare."""
+    """Atualiza lista de proxies gratuitos de múltiplas fontes."""
     global _free_proxy_pool, _free_proxy_ts
     if time.time() - _free_proxy_ts < _FREE_PROXY_TTL:
-        return  # ainda fresco
+        return
 
     pool = []
 
-    # 1. ProxyScrape — sem auth, lista pública
+    # 1. ProxyScrape — elite proxies
     try:
         r = requests.get(
             "https://api.proxyscrape.com/v2/?request=displayproxies"
@@ -196,36 +214,75 @@ def _refresh_free_proxies():
             timeout=15)
         proxies = [p.strip() for p in r.text.splitlines()
                    if p.strip() and ':' in p and len(p.strip()) < 30]
-        pool.extend(proxies[:50])  # max 50
-        log.info(f"  ProxyScrape: {len(proxies)} proxies carregados")
+        pool.extend(proxies[:40])
+        log.info(f"  ProxyScrape: {len(proxies)} proxies")
     except Exception as e:
-        log.debug(f"  ProxyScrape fetch error: {e}")
+        log.debug(f"  ProxyScrape: {e}")
 
-    # 2. Webshare — requer WEBSHARE_KEY no Railway (free tier: 10 proxies, 1GB/mês)
+    # 2. Webshare (free tier)
     if WEBSHARE_KEY:
         try:
-            r = requests.get(
-                "https://proxy.webshare.io/api/v2/proxy/list/"
+            r = requests.get("https://proxy.webshare.io/api/v2/proxy/list/"
                 "?mode=direct&page=1&page_size=25",
                 headers={"Authorization": f"Token {WEBSHARE_KEY}"}, timeout=15)
-            data = r.json()
-            ws_proxies = [
-                f"{p['proxy_address']}:{p['port']}"
-                for p in data.get("results", [])
-                if p.get("valid")
-            ]
-            pool.extend(ws_proxies)
-            log.info(f"  Webshare: {len(ws_proxies)} proxies carregados")
+            ws = [f"{p['proxy_address']}:{p['port']}"
+                  for p in r.json().get("results", []) if p.get("valid")]
+            pool.extend(ws)
+            log.info(f"  Webshare: {len(ws)} proxies")
         except Exception as e:
-            log.debug(f"  Webshare fetch error: {e}")
+            log.debug(f"  Webshare: {e}")
 
-    # Remove proxies que já falharam nesta sessão
-    pool = [p for p in pool if p not in _free_proxy_bad]
+    # 3. Geonode Free API
+    try:
+        r = requests.get(
+            "https://proxylist.geonode.com/api/proxy-list"
+            "?limit=50&page=1&sort_by=lastChecked&sort_type=desc"
+            "&protocols=http&anonymityLevel=elite",
+            timeout=10)
+        gn = [f"{p['ip']}:{p['port']}" for p in r.json().get("data", [])]
+        pool.extend(gn)
+        log.info(f"  Geonode: {len(gn)} proxies")
+    except Exception as e:
+        log.debug(f"  Geonode: {e}")
+
+    # 4. Monosans proxy list (GitHub raw)
+    try:
+        r = requests.get(
+            "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
+            timeout=10)
+        ms = [p.strip() for p in r.text.splitlines()
+              if p.strip() and ':' in p and len(p.strip()) < 30]
+        pool.extend(ms[:50])
+        log.info(f"  Monosans: {len(ms)} proxies")
+    except Exception as e:
+        log.debug(f"  Monosans: {e}")
+
+    # 5. TheSpeedX proxy list (GitHub raw)
+    try:
+        r = requests.get(
+            "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
+            timeout=10)
+        sx = [p.strip() for p in r.text.splitlines()
+              if p.strip() and ':' in p and len(p.strip()) < 30]
+        pool.extend(sx[:50])
+        log.info(f"  TheSpeedX: {len(sx)} proxies")
+    except Exception as e:
+        log.debug(f"  TheSpeedX: {e}")
+
+    # Remove proxies conhecidamente maus e duplicados
+    pool = list(dict.fromkeys(p for p in pool if p not in _free_proxy_bad))
     random.shuffle(pool)
+
+    # Valida amostra (max 20) para garantir qualidade mínima
+    if len(pool) > 10:
+        amostra = pool[:20]
+        validos = [p for p in amostra if _validar_proxy(p)]
+        taxa = len(validos) / len(amostra) * 100
+        log.info(f"  Proxy validation: {len(validos)}/{len(amostra)} OK ({taxa:.0f}%)")
+
     _free_proxy_pool = pool
     _free_proxy_ts   = time.time()
-    if pool:
-        log.info(f"  Free proxy pool: {len(pool)} proxies disponíveis")
+    log.info(f"  Free proxy pool: {len(pool)} proxies de 5 fontes")
 
 def _try_free_proxy(url, timeout=15):
     """Tenta obter URL via pool de proxies gratuitos. Retorna response ou None."""
@@ -469,8 +526,58 @@ def _is_exhausted(provider):
         _proxy_cooldown.pop(provider, None)
         _session_exhausted.discard(provider)
         log.info(f"  ✅ {provider} resetou — novo ciclo")
+        _save_provider_state()  # actualiza ficheiro após reset
         return False
     return True
+
+_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "providers_state.json")
+
+def _save_provider_state():
+    """Guarda estado dos providers em disco — persiste entre restarts."""
+    state = {}
+    for prov in _PROVIDERS:
+        d = _provider_data.get(prov, {})
+        if d.get("cooldown_until"):
+            state[prov] = {
+                "disabled_until": str(d["cooldown_until"]),
+                "reason": d.get("last_error", "unknown"),
+                "exhausted_at": d.get("exhausted_at", ""),
+            }
+    try:
+        with open(_STATE_FILE, "w") as f:
+            json.dump(state, f, indent=2, default=str)
+    except Exception as e:
+        log.debug(f"_save_provider_state: {e}")
+
+def _load_provider_state():
+    """Carrega estado dos providers do disco — restaura após restart."""
+    if not os.path.exists(_STATE_FILE):
+        return
+    try:
+        with open(_STATE_FILE) as f:
+            state = json.load(f)
+        restored = 0
+        for prov, info in state.items():
+            until_str = info.get("disabled_until", "")
+            if not until_str: continue
+            try:
+                until = _date.fromisoformat(until_str[:10])
+                if _date.today() >= until:
+                    continue
+                d = _provider_data.get(prov)
+                if d:
+                    d["cooldown_until"] = until
+                    d["exhausted_at"]   = info.get("exhausted_at", "")
+                    d["last_error"]     = info.get("reason", "")
+                    _proxy_cooldown[prov] = _dt(2099, 1, 1).timestamp()
+                    _session_exhausted.add(prov)
+                    restored += 1
+            except Exception as e:
+                log.debug(f"_load_provider_state {prov}: {e}")
+        if restored:
+            log.info(f"  📂 Estado restaurado: {restored} provider(s) ainda esgotado(s)")
+    except Exception as e:
+        log.debug(f"_load_provider_state: {e}")
 
 def _mark_exhausted(provider, msg=""):
     d = _provider_data.get(provider, {})
@@ -485,6 +592,7 @@ def _mark_exhausted(provider, msg=""):
     _proxy_cooldown[provider] = _dt(2099, 1, 1).timestamp()
     _session_exhausted.add(provider)  # nunca tentado novamente nesta sessão
     log.warning(f"  🔴 {provider} ESGOTADO — cooldown até {until} | {msg[:60]}")
+    _save_provider_state()  # persiste em disco
 
 def provider_status_dict():
     out = {}
@@ -3046,6 +3154,7 @@ def verificar():
     log.info("="*55)
     log.info(f"Verificação: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
     log.info("="*55)
+    _load_provider_state()  # restaura providers esgotados após restart
 
     # Verifica créditos — só para se ScraperAPI esgotado E sem outros proxies
     creditos = verificar_creditos_scraperapi()
