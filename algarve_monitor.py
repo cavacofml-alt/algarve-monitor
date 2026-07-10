@@ -483,7 +483,8 @@ EXHAUSTED_PATTERNS = [
     ("scrapedo",    ["Monthly request limit exceeded"]),
     ("crawlbase",   ["Token is invalid", "exhausted the free tier", "Add Billing"]),
     ("scraperapi",  ["out of API credits"]),
-    ("scrapingant", ["insufficient credits", "quota exceeded", "monthly limit"]),
+    ("scrapingant", ["insufficient credits", "quota exceeded", "monthly limit",
+                     "exhausted the API Credits", "monthly cycle"]),
     # NOTA: "concurrency limit" é temporário — NÃO marca como esgotado mensal
 ]
 
@@ -938,6 +939,18 @@ def proxied_get(url, render=True, _recursion=0, **kwargs):
         ms = int((time.time()-t0)*1000)
         if hasattr(result,'text') and result.text and len(result.text) < 500:
             msg = result.text[:200]
+            # Fallback genérico: mensagens inequívocas de quota marcam o proxy ACTUAL,
+            # independentemente do provider a que o padrão está associado
+            _generic_quota = ["exhausted the api credits", "upgrade your subscription",
+                              "monthly request limit", "out of api credits"]
+            if any(g in msg.lower() for g in _generic_quota):
+                log.warning(f"    proxy resposta bloqueada ({len(result.text)} chars) [{proxy}]: {msg[:100]}")
+                _record_provider(proxy, False, ms, error="quota", domain=_domain)
+                _mark_exhausted(proxy, msg)
+                _next = [p for p in proxies if p != proxy
+                         and p not in _session_exhausted and not _is_exhausted(p)]
+                if _next:
+                    return proxied_get(url, render=render, _recursion=_recursion+1)
             for _pv, _pts in EXHAUSTED_PATTERNS:
                 if _pv == proxy and any(_p.lower() in msg.lower() for _p in _pts):
                     log.warning(f"    proxy resposta bloqueada ({len(result.text)} chars): {msg[:100]}")
@@ -2092,10 +2105,12 @@ def paginar_scraperapi(url_tpl, parse_fn):
                 # Loga resposta bloqueada (proxy identificado pelo padrão da mensagem)
                 log.warning(f"    proxy resposta bloqueada ({len(r.text)} chars): {msg}")
                 # Verifica se é quota mensal esgotada
-                for prov, patterns in EXHAUSTED_PATTERNS:
-                    if any(p.lower() in msg.lower() for p in patterns):
-                        _mark_exhausted(prov, msg)
-                        return []  # para imediatamente — não tenta mais este provider
+                # NOTA: não atribuir por padrão aqui — o proxied_get já marca o
+                # provider correcto (o que serviu a resposta). Match por padrão neste
+                # ponto mis-atribuía respostas do ScrapingAnt ao ZenRows.
+                if any(g in msg.lower() for g in ["exhausted", "quota", "limit exceeded",
+                                                   "out of api credits"]):
+                    return []  # resposta de quota — proxied_get já marcou quem devia
                 else:
                     # Verifica se é erro temporário (concorrência/rate limit)
                     for prov, patterns in TRANSIENT_PATTERNS:
@@ -3344,9 +3359,13 @@ def _preflight_providers():
         ("scrapingbee",SCRAPINGBEE_KEY, lambda: requests.get("https://app.scrapingbee.com/api/v1/", timeout=8,
             params={"api_key":_get_active_key("scrapingbee") or SCRAPINGBEE_KEY,"url":TEST_URL,"render_js":"false"})),
         ("scrapedo",   SCRAPEDO_KEY,    lambda: requests.get(
-            f"https://api.scrape.do?token={SCRAPEDO_KEY}&url={requests.utils.quote(TEST_URL)}", timeout=8)),
+            f"https://api.scrape.do?token={_get_active_key('scrapedo') or SCRAPEDO_KEY}&url={requests.utils.quote(TEST_URL)}", timeout=8)),
         ("crawlbase",  CRAWLBASE_KEY,   lambda: requests.get(
             f"https://api.crawlbase.com/?token={CRAWLBASE_KEY}&url={requests.utils.quote(TEST_URL)}", timeout=8)),
+        ("scrapingant",SCRAPINGANT_KEY, lambda: requests.get(
+            "https://api.scrapingant.com/v2/general", timeout=8,
+            params={"url": TEST_URL, "x-api-key": SCRAPINGANT_KEY, "browser": "false"},
+            headers={"x-api-key": SCRAPINGANT_KEY})),
     ]:
         if not key or _is_exhausted(prov):
             log.info(f"    {prov}: ⏭ ignorado (sem key ou já esgotado)")
@@ -3384,6 +3403,11 @@ def verificar():
     if creditos:
         used, limit, pct = creditos
         log.info(f"ScraperAPI: {used}/{limit} créditos usados ({pct}%)")
+
+        # Key activa esgotada mas há outra? Roda e continua — não marca esgotado
+        if pct >= 100 and _rotate_key("scraperapi"):
+            log.info("  ScraperAPI: key seguinte activa — a continuar com ela")
+            return
 
         if pct >= 100:
             if n_proxies <= 1:

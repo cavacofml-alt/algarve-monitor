@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+.env
+venv/
+.venv/
+.wdm/
+providers_state.json
