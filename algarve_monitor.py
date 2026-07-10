@@ -123,11 +123,58 @@ EMAIL_DESTINATARIO = os.getenv("EMAIL_DESTINATARIO", EMAIL_REMETENTE)
 INTERVALO_HORAS    = int(os.getenv("INTERVALO_HORAS", "24"))
 DATABASE_URL       = os.getenv("DATABASE_URL", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-SCRAPERAPI_KEY     = os.getenv("SCRAPERAPI_KEY", "")
+def _load_multi_keys(base_name):
+    """Carrega KEY, KEY_1, KEY_2, ... — devolve lista de keys disponíveis."""
+    keys = []
+    base = os.getenv(base_name, "")
+    if base: keys.append(base)
+    for i in range(1, 6):  # suporta até _5
+        k = os.getenv(f"{base_name}_{i}", "")
+        if k and k not in keys: keys.append(k)
+    return keys
+
+# Multi-key: suporta SCRAPERAPI_KEY, SCRAPERAPI_KEY_1, SCRAPERAPI_KEY_2, ...
+_SCRAPERAPI_KEYS  = _load_multi_keys("SCRAPERAPI_KEY")
+_SCRAPINGBEE_KEYS = _load_multi_keys("SCRAPINGBEE_KEY")
+_SCRAPEDO_KEYS    = _load_multi_keys("SCRAPEDO_KEY")
+_key_index = {}  # provider -> índice da key activa
+
+def _get_active_key(provider):
+    """Devolve a key activa para o provider (rotação quando esgota)."""
+    keys_map = {
+        "scraperapi": _SCRAPERAPI_KEYS,
+        "scrapingbee": _SCRAPINGBEE_KEYS,
+        "scrapedo": _SCRAPEDO_KEYS,
+    }
+    keys = keys_map.get(provider, [])
+    if not keys: return ""
+    idx = _key_index.get(provider, 0)
+    return keys[idx % len(keys)]
+
+def _rotate_key(provider):
+    """Roda para a próxima key quando a actual esgota. True se há mais keys."""
+    keys_map = {
+        "scraperapi": _SCRAPERAPI_KEYS,
+        "scrapingbee": _SCRAPINGBEE_KEYS,
+        "scrapedo": _SCRAPEDO_KEYS,
+    }
+    keys = keys_map.get(provider, [])
+    if not keys: return False
+    idx = _key_index.get(provider, 0) + 1
+    if idx < len(keys):
+        _key_index[provider] = idx
+        log.warning(f"  🔄 {provider}: a rodar para key #{idx+1}/{len(keys)}")
+        try: _save_provider_state()   # persiste índice entre restarts
+        except Exception: pass
+        return True
+    return False  # todas as keys esgotadas
+
+SCRAPERAPI_KEY     = _SCRAPERAPI_KEYS[0] if _SCRAPERAPI_KEYS else ""
 ZENROWS_KEY        = os.getenv("ZENROWS_KEY", "")
-SCRAPINGBEE_KEY    = os.getenv("SCRAPINGBEE_KEY", "")
+SCRAPINGBEE_KEY    = _SCRAPINGBEE_KEYS[0] if _SCRAPINGBEE_KEYS else ""
 CRAWLBASE_KEY      = os.getenv("CRAWLBASE_KEY", "")
-SCRAPEDO_KEY       = os.getenv("SCRAPEDO_KEY", "")
+BROWSERLESS_TOKEN  = os.getenv("BROWSERLESS_TOKEN", "")
+SCRAPEDO_KEY       = _SCRAPEDO_KEYS[0] if _SCRAPEDO_KEYS else ""
 SCRAPINGANT_KEY    = os.getenv("SCRAPINGANT_KEY", "")
 WEBSHARE_KEY       = os.getenv("WEBSHARE_KEY", "")
 
@@ -575,6 +622,7 @@ def _save_provider_state():
                 "reason": d.get("last_error", "unknown"),
                 "exhausted_at": d.get("exhausted_at", ""),
             }
+    state["_key_index"] = dict(_key_index)  # índice das keys activas
     try:
         with open(_STATE_FILE, "w") as f:
             json.dump(state, f, indent=2, default=str)
@@ -588,6 +636,8 @@ def _load_provider_state():
     try:
         with open(_STATE_FILE) as f:
             state = json.load(f)
+        # Restaura índice das keys activas (rotação sobrevive a restarts)
+        _key_index.update(state.pop("_key_index", {}) or {})
         restored = 0
         for prov, info in state.items():
             until_str = info.get("disabled_until", "")
@@ -612,6 +662,10 @@ def _load_provider_state():
         log.debug(f"_load_provider_state: {e}")
 
 def _mark_exhausted(provider, msg=""):
+    # Antes de marcar esgotado, tenta rodar para a próxima key
+    if provider in ("scraperapi", "scrapingbee", "scrapedo"):
+        if _rotate_key(provider):
+            return  # nova key activa — provider continua disponível
     d = _provider_data.get(provider, {})
     if d.get("cooldown_until"): return
     today = _date.today()
@@ -819,7 +873,8 @@ def proxied_get(url, render=True, _recursion=0, **kwargs):
             raise Exception(f"{proxy} exhausted during run")
         if proxy == "scraperapi":
             rp = "&render=true&wait=3000" if render else ""
-            api = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={requests.utils.quote(url)}{rp}"
+            _key = _get_active_key("scraperapi") or SCRAPERAPI_KEY
+            api = f"http://api.scraperapi.com?api_key={_key}&url={requests.utils.quote(url)}{rp}"
             result = requests.get(api, timeout=60, headers=random_headers())
 
         elif proxy == "zenrows":
@@ -833,7 +888,7 @@ def proxied_get(url, render=True, _recursion=0, **kwargs):
 
         elif proxy == "scrapingbee":
             params = {
-                "api_key": SCRAPINGBEE_KEY, "url": url,
+                "api_key": _get_active_key("scrapingbee") or SCRAPINGBEE_KEY, "url": url,
                 "render_js": "true" if render else "false",
                 "premium_proxy": "true",
             }
@@ -876,7 +931,8 @@ def proxied_get(url, render=True, _recursion=0, **kwargs):
         elif proxy == "scrapedo":
             # Scrape.do — suporta JS com &render=true
             rp = "&render=true" if render else ""
-            api = f"https://api.scrape.do?token={SCRAPEDO_KEY}&url={requests.utils.quote(url)}{rp}"
+            _key = _get_active_key("scrapedo") or SCRAPEDO_KEY
+            api = f"https://api.scrape.do?token={_key}&url={requests.utils.quote(url)}{rp}"
             result = requests.get(api, timeout=60, headers=random_headers())
 
         ms = int((time.time()-t0)*1000)
@@ -2607,6 +2663,35 @@ def scrape_a1algarve(p):
 # Semáforo para limitar Playwright a 2 instâncias simultâneas
 _playwright_semaphore = threading.Semaphore(1)  # max 1 browser simultâneo
 
+def _pw_open_page_browserless(nome, url, sel):
+    """Usa Browserless.io (browser remoto) — zero RAM no Railway."""
+    if not BROWSERLESS_TOKEN:
+        return ""
+    try:
+        from playwright.sync_api import sync_playwright as _spw_bl
+        with _spw_bl() as p:
+            browser = p.chromium.connect_over_cdp(
+                f"wss://chrome.browserless.io?token={BROWSERLESS_TOKEN}")
+            ctx = browser.new_context(
+                user_agent="Mozilla/5.0 Chrome/120",
+                viewport={"width":1920,"height":1080}, locale="pt-PT")
+            try:
+                page = ctx.new_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                try: page.wait_for_selector(sel, timeout=8000)
+                except: pass
+                page.wait_for_timeout(2000)
+                html = page.content()
+                log.info(f"    {nome} (browserless): {len(html):,} chars")
+                return html
+            finally:
+                try: ctx.close()
+                except: pass
+                browser.close()
+    except Exception as e:
+        log.error(f"  {nome} browserless: {e}")
+        return ""
+
 def _pw_open_page_sync(nome, url, sel):
     """Versão síncrona pura de _pw_open_page — corre em thread sem asyncio."""
     try:
@@ -2644,7 +2729,12 @@ def _pw_open_page_sync(nome, url, sel):
         return ""
 
 def _pw_open_page(nome, url, sel):
-    """Abre página no browser Playwright partilhado (new_context, não new browser)."""
+    """Abre página: Browserless (remoto) → browser partilhado → thread limpa."""
+    # 1. Browserless primeiro — browser remoto, zero RAM local
+    if BROWSERLESS_TOKEN:
+        html = _pw_open_page_browserless(nome, url, sel)
+        if html and len(html) > 3000:
+            return html
     import asyncio
     # Detecta se estamos dentro de um asyncio loop (Gunicorn gthread)
     # Se sim, usa thread separada para correr sync_playwright
@@ -3225,7 +3315,7 @@ def verificar_creditos_scraperapi():
         return None
     try:
         r = requests.get(
-            f"https://api.scraperapi.com/account?api_key={SCRAPERAPI_KEY}",
+            f"https://api.scraperapi.com/account?api_key={_get_active_key('scraperapi') or SCRAPERAPI_KEY}",
             timeout=10)
         data = r.json()
         used  = data.get("requestCount", 0)
@@ -3252,7 +3342,7 @@ def _preflight_providers():
         ("zenrows",    ZENROWS_KEY,     lambda: requests.get("https://api.zenrows.com/v1/", timeout=8,
             params={"url":TEST_URL,"apikey":ZENROWS_KEY,"js_render":"false"})),
         ("scrapingbee",SCRAPINGBEE_KEY, lambda: requests.get("https://app.scrapingbee.com/api/v1/", timeout=8,
-            params={"api_key":SCRAPINGBEE_KEY,"url":TEST_URL,"render_js":"false"})),
+            params={"api_key":_get_active_key("scrapingbee") or SCRAPINGBEE_KEY,"url":TEST_URL,"render_js":"false"})),
         ("scrapedo",   SCRAPEDO_KEY,    lambda: requests.get(
             f"https://api.scrape.do?token={SCRAPEDO_KEY}&url={requests.utils.quote(TEST_URL)}", timeout=8)),
         ("crawlbase",  CRAWLBASE_KEY,   lambda: requests.get(
@@ -3750,7 +3840,7 @@ def verificar_limite_scraperapi():
     if not SCRAPERAPI_KEY: return
     try:
         r = requests.get(
-            f"https://api.scraperapi.com/account?api_key={SCRAPERAPI_KEY}",
+            f"https://api.scraperapi.com/account?api_key={_get_active_key('scraperapi') or SCRAPERAPI_KEY}",
             timeout=10)
         data = r.json()
         used    = data.get("requestCount", 0)
