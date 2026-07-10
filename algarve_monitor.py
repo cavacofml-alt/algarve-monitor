@@ -3404,10 +3404,12 @@ def verificar():
         used, limit, pct = creditos
         log.info(f"ScraperAPI: {used}/{limit} créditos usados ({pct}%)")
 
-        # Key activa esgotada mas há outra? Roda e continua — não marca esgotado
+        # Key activa esgotada mas há outra? Roda e a ronda CONTINUA
+        # (sem return — este bloco está inline em verificar(); um return
+        #  aqui cancelava a ronda inteira)
         if pct >= 100 and _rotate_key("scraperapi"):
             log.info("  ScraperAPI: key seguinte activa — a continuar com ela")
-            return
+            pct = 0  # key nova = créditos frescos; salta os ramos de esgotado
 
         if pct >= 100:
             if n_proxies <= 1:
