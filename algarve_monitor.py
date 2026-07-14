@@ -2035,43 +2035,36 @@ def validar(item, perfil, _log_descarte=False):
     titulo    = (item.get("titulo") or "").lower().strip()
     preco_str = (item.get("preco") or "").lower()
     link      = (item.get("link") or "").lower()
+    pv        = item.get("preco_valor")
     def _rej(motivo):
         if _log_descarte:
             log.info(f"    DESCARTADO [{motivo}] — {item.get('fonte','?')} | {item.get('titulo','')[:40]}")
         return False
 
-    # Excluir redes sociais e links de navegação
     if any(d in link for d in DOMINIOS_EXCLUIR):
-        return False
+        return _rej("domínio excluído")
 
-    # Excluir títulos genéricos (nome da imobiliária em vez do imóvel)
     if titulo in TITULOS_GENERICOS or len(titulo) < 5:
-        return False
+        return _rej(f"título genérico/curto: '{titulo[:25]}'")
 
-    # Excluir se título é exatamente o nome da fonte
+    # Título = nome da fonte: só rejeita se também não houver preço
+    # (sites sem título usam o nome da agência; com preço real, o imóvel é válido)
     fonte = (item.get("fonte") or "").lower()
-    if titulo == fonte or titulo.replace(" ","") == fonte.replace(" ",""):
-        return False
+    if (titulo == fonte or titulo.replace(" ","") == fonte.replace(" ","")) and not pv:
+        return _rej("título = nome da fonte, sem preço")
 
-    # Excluir arrendamentos
     for palavra in PALAVRAS_ARRENDAMENTO:
         if palavra in titulo or palavra in preco_str:
-            return False
+            return _rej(f"arrendamento: '{palavra}'")
 
-    # Excluir por URL
     if any(x in link for x in ["/arrendar/","/arrendamento/","/alugar/","/rent/"]):
-        return False
+        return _rej("URL de arrendamento")
 
-    # Validar preço máximo
-    pv = item.get("preco_valor")
     if pv and pv > perfil["preco_max"]:
-        log.debug(f"  validar REJEITADO preço {pv} > max {perfil['preco_max']} | {item.get('fonte')} {item.get('titulo','')[:30]}")
-        return False
+        return _rej(f"preço {pv:,}€ > máx {perfil['preco_max']:,}€")
 
-    # Excluir preços mensais (arrendamento)
     if pv and pv < 10000:
-        log.debug(f"  validar REJEITADO preço {pv} < 10000 (possível renda) | {item.get('fonte')}")
-        return False
+        return _rej(f"preço {pv}€ < 10k (renda?)")
 
     return True
 
@@ -2744,9 +2737,13 @@ def _pw_open_page_sync(nome, url, sel):
         return ""
 
 def _pw_open_page(nome, url, sel):
-    """Abre página: Browserless (remoto) → browser partilhado → thread limpa."""
-    # 1. Browserless primeiro — browser remoto, zero RAM local
-    if BROWSERLESS_TOKEN:
+    """Abre página: browser partilhado → Browserless → thread limpa.
+    O browser partilhado tem prioridade: dentro do thread PW já há um
+    sync_playwright activo, e criar outro na mesma thread (Browserless)
+    dá 'Sync API inside asyncio loop'."""
+    _b = getattr(scrape_playwright_html, '_shared_browser', None)
+    # 1. Browserless SÓ quando não há browser partilhado activo
+    if BROWSERLESS_TOKEN and not (_b and _b.is_connected()):
         html = _pw_open_page_browserless(nome, url, sel)
         if html and len(html) > 3000:
             return html
@@ -3191,11 +3188,14 @@ def correr_scraper(args):
     try:
         r = fn(perfil)
         anuncios, pags = r if isinstance(r, tuple) else (r, 1)
-        anuncios = [a for a in anuncios if validar(a, perfil)]
+        n_raw = len(anuncios or [])
+        anuncios = [a for a in (anuncios or []) if validar(a, perfil, _log_descarte=True)]
         total = len(anuncios)
+        n_desc = n_raw - total
         tempo = round((time.time()-t0)*1000)
         if total == 0:
-            log.warning(f"    ⚠️ {nome}: 0 resultados ({tempo}ms)")
+            extra = f" [raw={n_raw} descartados={n_desc}]" if n_raw else " — scraper não encontrou cards"
+            log.warning(f"    ⚠️ {nome}: 0 resultados ({tempo}ms){extra}")
         else:
             log.info(f"    ✅ {nome}: {total} resultados ({tempo}ms)")
     except Exception as e:
@@ -3257,10 +3257,22 @@ def verificar_perfil(perfil):
             resultados_pw = []
             try:
                 with _spw_sync() as _spw:
-                    _browser = _spw.chromium.launch(
-                        headless=True, executable_path="/usr/bin/chromium",
-                        args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu",
-                              "--single-process","--disable-blink-features=AutomationControlled"])
+                    _browser = None
+                    # Preferência: Browserless (remoto, zero RAM local, 1 só ligação)
+                    if BROWSERLESS_TOKEN:
+                        try:
+                            _browser = _spw.chromium.connect_over_cdp(
+                                f"wss://chrome.browserless.io?token={BROWSERLESS_TOKEN}",
+                                timeout=15000)
+                            log.info("  🌐 Ligado ao Browserless (browser remoto)")
+                        except Exception as _e:
+                            log.warning(f"  Browserless indisponível ({_e}) — Chromium local")
+                            _browser = None
+                    if _browser is None:
+                        _browser = _spw.chromium.launch(
+                            headless=True, executable_path="/usr/bin/chromium",
+                            args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu",
+                                  "--single-process","--disable-blink-features=AutomationControlled"])
                     scrape_playwright_html._shared_browser = _browser
                     for a in args_pw:
                         try:
