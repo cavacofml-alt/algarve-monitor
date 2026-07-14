@@ -437,7 +437,7 @@ function showTab(name){
 async function carregar(){
   let imoveis=[], stats={total:0,ultimas_24h:0,baixas_preco:0,removidos:0,reativados:0,favoritos:0};
   try {
-    const[r1,r2]=await Promise.all([
+    var r1,r2;[r1,r2]=await Promise.all([
       fetch('/api/imoveis').then(r=>r.json()),
       fetch('/api/stats').then(r=>r.json()),
     ]);
@@ -446,7 +446,18 @@ async function carregar(){
     if(r1 && r1.erro) console.error('API imoveis:', r1.erro);
   } catch(e) {
     console.error('Erro ao carregar:', e);
+    const g=document.getElementById('grid');
+    if(g) g.innerHTML='<div class="empty">⚠️ Erro ao carregar dados: '+(e.message||e)+'<br>Verifica /api/imoveis e /api/stats.</div>';
+    const sb=document.getElementById('sb-ultima');
+    if(sb) sb.textContent='erro';
     return;
+  }
+  if(imoveis.length===0){
+    const r1erro = (typeof r1!=='undefined' && r1 && r1.erro) ? r1.erro : null;
+    if(r1erro){
+      const g=document.getElementById('grid');
+      if(g) g.innerHTML='<div class="empty">⚠️ API devolveu erro: '+r1erro+'</div>';
+    }
   }
   todos=imoveis;
   renderStats(stats);
