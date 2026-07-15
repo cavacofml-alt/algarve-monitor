@@ -3205,7 +3205,12 @@ def card_email(im, badge="NOVO", cor="#16a34a"):
 def _send_via_resend(assunto, html, destinatario):
     """Envia via Resend API — não usa SMTP (Railway bloqueia portas 465/587)."""
     key = os.getenv("RESEND_API_KEY","")
-    remetente = os.getenv("EMAIL_REMETENTE","monitor@algarve-imoveis.pt")
+    # O Resend recusa remetentes de domínios não verificados (gmail.com, etc).
+    # Sem domínio próprio verificado, usa-se o domínio de teste do Resend.
+    _rem = os.getenv("EMAIL_REMETENTE","").strip()
+    _dominio_proprio = _rem and not any(
+        d in _rem.lower() for d in ("@gmail.", "@hotmail.", "@outlook.", "@yahoo.", "@sapo.", "@live."))
+    remetente = _rem if _dominio_proprio else "Monitor Imóveis <onboarding@resend.dev>"
     if not key:
         return False, "RESEND_API_KEY não configurada"
     try:
