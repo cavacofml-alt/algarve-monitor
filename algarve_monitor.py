@@ -1283,9 +1283,21 @@ def geocodificar_existentes():
         log.error(f"geocodificar_existentes: {e}")
 
 def extrair_preco_valor(p):
+    """Extrai o PRIMEIRO preço plausível de uma string.
+
+    Antes: re.sub(r"[^\d]","",p) juntava todos os dígitos — um card com
+    "930.000 €950.000 €" virava 930_000_950_000 (biliões). Também partia
+    decimais: "1.250.000,50 €" -> 125000050.
+    Agora: procura grupos com separador de milhares (. ou espaço) e aceita
+    o primeiro valor numa gama plausível para imóveis.
+    """
     if not p: return None
-    d = re.sub(r"[^\d]", "", p)
-    return int(d) if d else None
+    s = p.replace("\u00a0", " ").replace("\u202f", " ")   # NBSP / thin space
+    for m in re.finditer(r"\d{1,3}(?:\.\d{3})+|\d{1,3}(?: \d{3})+|\d+", s):
+        v = int(re.sub(r"\D", "", m.group()))
+        if 1000 <= v <= 50_000_000:
+            return v
+    return None
 
 def extrair_area(t):
     if not t: return None
@@ -2003,9 +2015,40 @@ def com_retry(fn,n=3,w=5):
 
 MAX_PAGINAS = 2  # max 2 páginas por zona
 
+# ── Títulos-lixo devolvidos pelos sites ────────────────────
+# Muitos sites devolvem breadcrumbs ("Faro>Faro>Faro"), contadores
+# ("Imóveis encontrados:4835") ou placeholders ("Não Aplicável") no lugar do
+# título. Como o URL do anúncio traz um slug descritivo, derivamos daí.
+_TITULOS_A_REPARAR = re.compile(
+    r"^(n[ãa]o\s+aplic[áa]vel|sem\s+t[íi]tulo|s/\s*t[íi]tulo)$"
+    r"|im[óo]veis\s+encontrados"
+    r"|^[^>]{1,30}(>[^>]{1,30}){1,4}$"          # breadcrumb: A>B>C
+    r"|^\{\{", re.I)
+
+def _titulo_do_slug(url):
+    """Deriva um título legível do slug do URL do anúncio."""
+    if not url: return None
+    m = re.search(r"/(?:imovel|imoveis|propriedade|detalhes-do-imovel|property)/([a-z0-9\-]{8,})", url, re.I)
+    if not m:
+        m = re.search(r"/((?:comprar|venda)-[a-z0-9\-]{8,})\.html", url, re.I)
+    if not m: return None
+    slug = re.sub(r"-[0-9a-f]{6,}(-[0-9a-f]+)*$", "", m.group(1), flags=re.I)  # tira UUID final
+    slug = re.sub(r"^(comprar|venda)-", "", slug, flags=re.I)
+    t = slug.replace("-", " ").strip()
+    if len(t) < 8: return None
+    return (t[:1].upper() + t[1:])[:120]
+
+def _melhor_titulo(titulo, link):
+    """Se o título for lixo/genérico, tenta reconstruí-lo a partir do URL."""
+    t = (titulo or "").strip()
+    if not t or len(t) < 5 or _TITULOS_A_REPARAR.search(t):
+        return _titulo_do_slug(link) or t or "Sem título"
+    return t
+
 def fazer_item(link,titulo,preco,fonte,zona,img=None):
     pv=extrair_preco_valor(preco)
-    return {"id":link,"titulo":titulo or "Sem título","preco":preco or "N/D",
+    titulo=_melhor_titulo(titulo, link)   # repara breadcrumbs/contadores/placeholders
+    return {"id":link,"titulo":titulo,"preco":preco or "N/D",
             "preco_valor":pv,"link":link,"fonte":fonte,"zona":zona,"imagem_url":img,
             "area_m2":extrair_area(titulo),"quartos":extrair_quartos(titulo)}
 
@@ -2025,6 +2068,46 @@ DOMINIOS_EXCLUIR = [
     "youtube.com","tiktok.com","whatsapp.com","t.me","telegram.me",
     "google.com","maps.google","mailto:","tel:","javascript:",
 ]
+
+# ── Links institucionais / navegação que NÃO são imóveis ────
+# 35% da BD eram links de rodapé, selectores de idioma e páginas
+# institucionais. TITULOS_GENERICOS só fazia correspondência exacta.
+TITULOS_LIXO_RE = re.compile(r"""
+    ^(pt|en|es|fr|de|it|nl)-\s                 # selector de idioma "es- Español"
+  | ^\{\{                                       # template Angular por renderizar
+  | ^vendido$ | ^reservado$
+  | pol[íi]tica\s+(de|privacidade)
+  | termos\s+e\s+condi | condi[çc][õo]es\s+(gerais|de\s+utiliza)
+  | livro\s+(de\s+)?reclama | canal\s+de\s+den[úu]ncias
+  | resolu[çc][ãa]o\s+(alternativa|de\s+lit)
+  | ^franchising$ | sistema\s+de\s+franchising | modelo\s+de\s+neg[óo]cio
+  | ^quem\s+somos$ | ^sobre\s+n[óo]s$ | ^contact(e-nos|os|s|o\s+geral)?$
+  | ^servi[çc]os$ | ^favoritos$ | ^not[íi]cias$ | ^imprensa$
+  | ^equipas?$ | ^consultores$ | ^vantagens$ | ^candidatura
+  | ^recrutamento$ | ^market\s+centers$ | ^empreendimentos$
+  | ^(comprar|vender)$ | ^im[óo]veis$ | ^properties$ | ^visita\s+virtual$
+  | ^apresenta[çc][ãa]o$ | ^homepage$ | ^kw\s+luxury$
+  | o\s+que\s+procura | ajude-nos\s+a\s+melhorar | responsabilidade\s+social
+  | gabinete\s+de\s+imprensa | casos\s+de\s+sucesso | [áa]reas\s+de\s+trabalho
+  | ^ser\s+era$ | an[úu]ncio\s+gratuito | acelerador\s+digital
+  | garantia\s+era | casa\s+a\s+estrear | casa\s+nova,?\s+vida\s+nova
+  | portugal\s+sweet\s+home | at[ée]\s+100%?\s+financiamento
+""", re.I | re.X)
+
+URLS_LIXO_RE = re.compile(r"""
+    /pol[íi]tica | /politica- | /privacy | /cookies
+  | /termos | condicoes-gerais | livroreclamacoes | whistleblower
+  | /franchising | /recrutamento | /candidatura
+  | /quem-somos | /sobre-nos | /sobre$ | /about
+  | /contact(o|os|s|e-nos)?/?$
+  | /noticias | /press/?$ | /imprensa
+  | /equipas?/?$ | /equipa/?$ | /consultores/?$
+  | /marketcenters | /market-centers
+  | /vantagens | /o-que-procura | /era-portugal/ | /trabalhar-na-era
+  | /visita-virtual | /campanhas/
+  | \#$                                         # âncora vazia
+  | [?&]page=\d+                                # página de LISTAGEM, não anúncio
+""", re.I | re.X)
 
 # Títulos genéricos que indicam que não é um imóvel real
 TITULOS_GENERICOS = [
@@ -2051,6 +2134,12 @@ def validar(item, perfil, _log_descarte=False):
 
     if titulo in TITULOS_GENERICOS or len(titulo) < 5:
         return _rej(f"título genérico/curto: '{titulo[:25]}'")
+
+    # Links institucionais / navegação (política, contactos, franchising, ...)
+    if TITULOS_LIXO_RE.search(titulo):
+        return _rej("título institucional/navegação")
+    if URLS_LIXO_RE.search(link):
+        return _rej("URL institucional ou página de listagem")
 
     # Título = nome da fonte: só rejeita se também não houver preço
     # (sites sem título usam o nome da agência; com preço real, o imóvel é válido)
@@ -2987,32 +3076,27 @@ def scrape_algarvemanta(p):
 # ── SITES DESATIVADOS (falham consistentemente) ────────────
 # Timeout persistente — URLs provavelmente errados ou bloqueio total
 SCRAPERS_DESATIVADOS = {
-    "Sotheby's",        # Timeout
-    "IAD Portugal",     # Timeout
-    "Chave Nova",       # Timeout
-    "Garvetur",         # Timeout
-    "Villas Key",       # Timeout
-    "D'Alma Portuguesa",# Timeout
-    "Tripalgarve",      # Timeout
-    "Vernon Algarve",   # Timeout
-    "QP Savills",       # Timeout
-    # HTTP 200 sem conteúdo — SPA React/Angular sem SSR
-    "Coldwell Banker",          # JS dinâmico
-    "Dils Portugal",            # JS dinâmico
-    "Nurisimo",                 # JS dinâmico
-    "Golden Properties",        # JS dinâmico
-    "Algarve Dream Property",   # JS dinâmico
-    "Mimosa Properties",        # JS dinâmico
-    "Algarve Unique Properties",# JS dinâmico
-    "Boto Properties",          # JS dinâmico
-    "Sunpoint Properties",      # JS dinâmico
-    "Your Luxury Property",     # JS dinâmico
-    "Barra Prime",              # JS dinâmico
-    "Chestertons Algarve",      # JS dinâmico
-    "Imocusto",                 # JS dinâmico / 404
-    "Sortami",                  # JS dinâmico
-    "LNHouse",                  # Arrendamentos em vez de venda
+    # Lista reconstruída a partir da evidência dos logs de 15/07/2026.
+    # NÃO adicionar por suposição — só com prova de que o site não devolve nada.
+    # Reavaliar periodicamente: sites mudam.
+
+    # Devolvem HTML vazio/erro — o site não responde com conteúdo útil.
+    # (o nº de chars é o que o Playwright recebeu de facto)
+    "Vernon Algarve",      # 487 chars — e opera no Barlavento, fora do perfil
+    "D'Alma Portuguesa",   # 487 chars
+    "Your Luxury Property",# 2.046 chars — página de erro
+    "Barra Prime",         # 4.426 chars — página de erro
+
+    # Sotheby's e Villas Key: timeouts persistentes
+    "Sotheby's",
+    "Villas Key",
 }
+
+# NOTA: Garvetur, Dils Portugal, Sortami e Boto Properties estavam nesta lista
+# mas FUNCIONAM (7, 1, 1 e 16 resultados em 15/07) — foram retirados.
+# Os que devolvem cards mas 0 items (Sunpoint 12→0, Mimosa, Algarve Unique 12→0,
+# Algarve Dream 136→0) ficam ACTIVOS: o problema é o parsing, não o site.
+
 
 # Sites que continuam bloqueados após fix_urls.py (HTTP 0 ou sem conteúdo em todos os URLs testados)
 # Todos os sites foram migrados para Playwright ou tiveram URLs corrigidos
@@ -3222,11 +3306,16 @@ def verificar_perfil(perfil):
 
     # Corre scrapers em paralelo com ThreadPoolExecutor
     from concurrent.futures import ThreadPoolExecutor, as_completed
+    # SCRAPERS_DESATIVADOS era definida mas NUNCA usada — os sites mortos
+    # continuavam a correr, ~13s cada por ronda.
     args = [(nome, fn, perfil) for nome, fn in SCRAPERS
-             if nome not in _broken_scrapers]
+             if nome not in _broken_scrapers
+             and nome not in SCRAPERS_DESATIVADOS]
     if len(args) < len(SCRAPERS):
-        skipped = len(SCRAPERS) - len(args)
-        log.info(f"  ⏭ {skipped} scrapers em pausa (broken) — a saltar")
+        n_off = len([1 for nome, _ in SCRAPERS if nome in SCRAPERS_DESATIVADOS])
+        n_bad = len(SCRAPERS) - len(args) - n_off
+        log.info(f"  ⏭ A saltar {len(SCRAPERS)-len(args)} scrapers "
+                 f"({n_off} desactivados, {n_bad} em pausa automática)")
     
     _PW_NOMES = {
         "Boto Properties","Sunpoint Properties","Algarve Unique Properties",
