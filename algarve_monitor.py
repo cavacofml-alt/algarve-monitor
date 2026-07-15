@@ -1562,11 +1562,16 @@ def get_imoveis(perfil_nome=None, limite=300):
             q+=" ORDER BY score DESC, criado_em DESC LIMIT %s"; p.append(limite)
             cur.execute(q,p)
             rows = cur.fetchall()
+            import datetime as _dtmod
             result = []
             for r in rows:
                 d = dict(r)
-                for k in ["criado_em","atualizado_em","removido_em","reativado_em"]:
-                    if d.get(k): d[k] = d[k].isoformat()
+                # Serializa QUALQUER coluna de data/hora (não só as 4 conhecidas).
+                # Colunas novas como first_seen/last_seen ficavam como datetime e
+                # rebentavam o jsonify → 500 em /api/imoveis (mas não em /api/stats).
+                for k, v in list(d.items()):
+                    if isinstance(v, (_dtmod.datetime, _dtmod.date)):
+                        d[k] = v.isoformat()
                 result.append(d)
             return result
 
@@ -3617,8 +3622,12 @@ def dashboard():
 @app.route("/api/imoveis")
 @login_required
 def api_imoveis():
-    try: return jsonify(get_imoveis())
-    except Exception as e: return jsonify({"erro":str(e)}),500
+    try:
+        return jsonify(get_imoveis())
+    except Exception as e:
+        import traceback
+        log.error(f"/api/imoveis falhou: {e}\n{traceback.format_exc()}")
+        return jsonify({"erro": str(e)}), 500
 
 @app.route("/api/stats")
 @login_required

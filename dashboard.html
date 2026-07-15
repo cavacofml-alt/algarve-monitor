@@ -437,10 +437,15 @@ function showTab(name){
 async function carregar(){
   let imoveis=[], stats={total:0,ultimas_24h:0,baixas_preco:0,removidos:0,reativados:0,favoritos:0};
   try {
-    var r1,r2;[r1,r2]=await Promise.all([
-      fetch('/api/imoveis').then(r=>r.json()),
-      fetch('/api/stats').then(r=>r.json()),
-    ]);
+    async function _get(u){
+      const res = await fetch(u, {credentials:'same-origin'});
+      if(res.status===401 || res.redirected){ throw new Error('Sessão expirada ('+u+') — faz login outra vez'); }
+      if(!res.ok){ throw new Error('HTTP '+res.status+' em '+u); }
+      const txt = await res.text();
+      try { return JSON.parse(txt); }
+      catch(_) { throw new Error('Resposta não-JSON de '+u+': '+txt.slice(0,120)); }
+    }
+    var r1,r2;[r1,r2]=await Promise.all([_get('/api/imoveis'), _get('/api/stats')]);
     imoveis = Array.isArray(r1) ? r1 : [];
     stats   = r2 && !r2.erro ? r2 : stats;
     if(r1 && r1.erro) console.error('API imoveis:', r1.erro);
@@ -536,6 +541,12 @@ function renderCard(im){
   const eopts=['novo','visitar','visitado','rejeitado'];
   const elbl=['📋 Estado','👁 Para visitar','✅ Visitado','❌ Rejeitado'];
   const borderCor = im.favorito?'#f5a623':!im.disponivel?'#9ca3af':im.estado==='visitado'?'#6b7280':im.preco_antigo?'#3b82f6':'#2ecc8a';
+  // Badge de score — estas variáveis existiam só na aba Oportunidades; sem elas
+  // o renderCard lançava ReferenceError e o grid ficava vazio ("A carregar...").
+  const sc = im.score || 0;
+  const scoreCor   = sc>=80?'#16a34a':sc>=60?'#d97706':'#ea580c';
+  const scoreLabel = sc>=80?'Excelente':sc>=60?'Boa compra':'Razoável';
+  const scoreEmoji = sc>=80?'🟢':sc>=60?'🟡':'🟠';
   return `<div class="card${sel?' selected-compare':''}" id="c-${btoa(im.id).slice(0,12)}" style="border-top:3px solid ${borderCor}">
     <a href="${im.link}" target="_blank">${img}</a>
     <div style="position:absolute;top:8px;right:8px;background:${scoreCor};color:white;
