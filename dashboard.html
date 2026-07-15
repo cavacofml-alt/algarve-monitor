@@ -516,9 +516,41 @@ function filtrar(){
 }
 
 // ── CARD ──────────────────────────────────────────────────
+// ── IMAGENS ───────────────────────────────────────────────
+// Muitos sites (Casa SAPO, SuperCasa) usam lazy-loading: o imagem_url capturado
+// é um GIF 1x1 em data: URI e a foto real está em imagens[]. Outros devolvem
+// placeholders ("no-pic", "NoImg") ou caminhos relativos ao site de origem.
+function _imgInvalida(u){
+  if(!u || typeof u!=='string') return true;
+  if(u.startsWith('data:')) return true;                       // placeholder lazy-load
+  if(/no-?pic|no-?img|placeholder/i.test(u)) return true;       // placeholder explícito
+  if(u.startsWith('/') && !u.startsWith('//')) return true;     // relativo ao site de origem
+  return false;
+}
+function melhorImagem(im){
+  let u = im.imagem_url;
+  if(_imgInvalida(u)) u = (im.imagens||[]).find(x=>!_imgInvalida(x));
+  if(_imgInvalida(u)) return null;
+  if(u.startsWith('//')) u = 'https:' + u;                      // protocolo-relativo
+  return u;
+}
+function imgFallback(el){
+  const p = el.parentElement;
+  if(!p) return;
+  p.innerHTML = '<div class="no-img-pro"><div style="font-size:40px">🏡</div>'
+    + '<div style="font-size:11px;color:#9ca3af;margin-top:6px">Sem fotografia</div>'
+    + '<div style="font-size:10px;color:#d1d5db;margin-top:2px">Clique para ver anúncio</div></div>';
+}
+
 function renderCard(im){
-  const img=im.imagem_url?`<img class="card-img" src="${im.imagem_url}" loading="lazy" alt="" onerror="this.parentElement.innerHTML='<div class=\"no-img-pro\"><div>🏡</div><div style=\"font-size:11px;color:#9ca3af;margin-top:6px\">Sem fotografia</div><div style=\"font-size:10px;color:#d1d5db;margin-top:2px\">Clique para ver anúncio</div></div>'">`
-    :`<a href="${im.link}" target="_blank" style="text-decoration:none"><div class="no-img-pro"><div style="font-size:40px">🏡</div><div style="font-size:11px;color:#9ca3af;margin-top:6px">Sem fotografia</div><div style="font-size:10px;color:#d1d5db;margin-top:2px">Clique para ver anúncio</div></div></a>`;
+  const _u = melhorImagem(im);
+  const _semFoto = `<div class="no-img-pro"><div style="font-size:40px">🏡</div>`
+    + `<div style="font-size:11px;color:#9ca3af;margin-top:6px">Sem fotografia</div>`
+    + `<div style="font-size:10px;color:#d1d5db;margin-top:2px">Clique para ver anúncio</div></div>`;
+  // onerror chama uma função — sem aspas aninhadas a partir o atributo HTML
+  const img = _u
+    ? `<img class="card-img" src="${_u}" loading="lazy" alt="" onerror="imgFallback(this)">`
+    : `<a href="${im.link}" target="_blank" style="text-decoration:none">${_semFoto}</a>`;
   const sel=comparar_ids.includes(im.id);
   let badges='';
   if(!im.disponivel) badges+='<span class="badge b-rem">Removido</span>';
