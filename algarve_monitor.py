@@ -1283,7 +1283,7 @@ def geocodificar_existentes():
         log.error(f"geocodificar_existentes: {e}")
 
 def extrair_preco_valor(p):
-    """Extrai o PRIMEIRO preço plausível de uma string.
+    r"""Extrai o PRIMEIRO preço plausível de uma string.
 
     Antes: re.sub(r"[^\d]","",p) juntava todos os dígitos — um card com
     "930.000 €950.000 €" virava 930_000_950_000 (biliões). Também partia
@@ -2022,7 +2022,7 @@ MAX_PAGINAS = 2  # max 2 páginas por zona
 _TITULOS_A_REPARAR = re.compile(
     r"^(n[ãa]o\s+aplic[áa]vel|sem\s+t[íi]tulo|s/\s*t[íi]tulo)$"
     r"|im[óo]veis\s+encontrados"
-    r"|^[^>]{1,30}(>[^>]{1,30}){1,4}$"          # breadcrumb: A>B>C
+    r"|^[^>]{1,30}(>[^>]{1,30}){2,4}$"          # breadcrumb: A>B>C (mín. 2 '>')
     r"|^\{\{", re.I)
 
 def _titulo_do_slug(url):
@@ -2935,7 +2935,9 @@ def scrape_playwright_html(nome, url, sel, zona, perfil):
                 pt  = card.select_one("[class*='price'],[class*='preco'],[class*='valor'],[class*='Price']")
                 tt  = card.select_one("h1,h2,h3,h4,[class*='title'],[class*='nome'],[class*='Title']")
                 img = card.select_one("img[src]")
-                titulo = tt.get_text(strip=True) if tt else nome
+                # NÃO usar `nome` (a fonte) como fallback: validar() rejeita
+                # titulo==fonte. Deixar vazio -> _melhor_titulo() deriva do slug do URL.
+                titulo = tt.get_text(strip=True) if tt else ""
                 preco  = pt.get_text(strip=True) if pt else "N/D"
                 imagem = img.get("src") or img.get("data-src","") if img else None
                 item = fazer_item(link, titulo, preco, nome, zona, imagem)
