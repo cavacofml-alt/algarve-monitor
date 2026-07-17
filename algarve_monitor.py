@@ -2503,7 +2503,11 @@ def scrape_imocusto(p):
     except Exception as e: log.error(f"Imocusto: {e}"); return [],0
 
 def scrape_lnhouse(p):
-    try: return _api_scrape("https://www.lnhouse.pt/venda?page={page}","https://www.lnhouse.pt","LNHouse","VRSA/Castro Marim")
+    """LNHouse: SPA — o HTTP só devolvia lnhouse.pt/# (navegação). Playwright."""
+    try:
+        return scrape_playwright_html("LNHouse", "https://www.lnhouse.pt/venda",
+                                      "a[href*='/imovel'], a[href*='/detalhe']",
+                                      "VRSA/Castro Marim", p)
     except Exception as e: log.error(f"LNHouse: {e}"); return [],0
 
 def scrape_engelvoelkers(p):
@@ -2550,13 +2554,17 @@ def scrape_remax(p):
     return res,pags
 
 def scrape_kwportugal(p):
+    """KW é uma SPA Angular: o crawl HTTP só via o menu (250 links de navegação,
+    ~40s desperdiçados por ronda). Passa a renderizar com o browser partilhado e
+    a apanhar apenas links de anúncio. O auto-diagnóstico loga o 1º card se falhar."""
     res=[]; pags=0
-    for zs in p["zonas"]:
+    for zs in p["zonas"][:2]:   # 2 zonas para conter o tempo de browser
         zl=TODAS_AS_ZONAS.get(zs,zs)
-        url=f"https://www.kwportugal.pt/pt/pesquisa/?localizacao={zs}&tipo=comprar&priceMax={p['preco_max']}&rooms={p['quartos_min']}&page={{page}}"
-        try: its,pg=_api_scrape(url,"https://www.kwportugal.pt","KW Portugal",zl); res.extend(its); pags+=pg
+        url=f"https://www.kwportugal.pt/pt/pesquisa/?localizacao={zs}&tipo=comprar&priceMax={p['preco_max']}"
+        try:
+            its,pg=scrape_playwright_html("KW Portugal", url, "a[href*='/imovel']", zl, p)
+            res.extend(its); pags+=pg
         except Exception as e: log.error(f"KW/{zs}: {e}")
-        time.sleep(random.uniform(2,4))
     return res,pags
 
 # ============================================================
@@ -2930,9 +2938,16 @@ def scrape_playwright_html(nome, url, sel, zona, perfil):
                 return [], 0
             cards = soup.select(sel)
             log.info(f"    Playwright {nome}: {len(cards)} cards")
+            if not cards:
+                # 0 cards: mostra que classes existem no topo para ajustar o seletor
+                _classes = sorted({c for el in soup.select("[class]")[:200]
+                                   for c in (el.get("class") or [])
+                                   if any(k in c.lower() for k in ("prop","card","list","item","result"))})[:15]
+                log.info(f"    [DIAG {nome}] seletor '{sel}' → 0. Classes candidatas: {_classes}")
             
             # Primary: extract from cards with links
             found_from_cards = 0
+            _debug_card = cards[0] if cards else None
             for card in cards:
                 # Link pode estar dentro do card, ser o card, ou envolvê-lo.
                 # Sunpoint/Algarve Dream: 12-136 cards, 0 itens, por só
@@ -2960,6 +2975,11 @@ def scrape_playwright_html(nome, url, sel, zona, perfil):
                 if validar(item, perfil):
                     items.append(item)
                     found_from_cards += 1
+            if cards and found_from_cards == 0 and _debug_card is not None:
+                _snippet = str(_debug_card)[:600].replace("\n", " ")
+                _tem_a = bool(_debug_card.select_one("a[href]") or _debug_card.find_parent("a", href=True))
+                log.info(f"    [DIAG {nome}] {len(cards)} cards, 0 itens | card tem <a>: {_tem_a}")
+                log.info(f"    [DIAG {nome}] 1º card: {_snippet}")
 
             # Fallback: if no items found from cards, try link-based extraction
             if not found_from_cards:
@@ -3345,6 +3365,7 @@ def verificar_perfil(perfil):
         "Garvetur","Barra Prime","Mimosa Properties","Sortami","Vernon Algarve",
         "Algarve Dream Property","Your Luxury Property","Dils Portugal",
         "D'Alma Portuguesa","Sotheby's",
+        "KW Portugal","LNHouse",   # SPAs — reescritos para Playwright em 17/07
     }
     args_http = [a for a in args if a[0] not in _PW_NOMES]
     args_pw   = [a for a in args if a[0] in _PW_NOMES]
