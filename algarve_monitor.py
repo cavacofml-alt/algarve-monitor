@@ -1669,8 +1669,13 @@ def get_dados_mercado():
                 """)
                 row = cur.fetchone()
                 if row:
-                    dist = {"<100k": row[0] or 0,"100-150k": row[1] or 0,
-                            "150-200k": row[2] or 0,"200-300k": row[3] or 0,">300k": row[4] or 0}
+                    # dict_row: aceder por row[0] dava KeyError: 0 — era o
+                    # erro "get_dados_mercado: 0" nos logs
+                    dist = {"<100k": row.get("ate_100k") or 0,
+                            "100-150k": row.get("ate_150k") or 0,
+                            "150-200k": row.get("ate_200k") or 0,
+                            "200-300k": row.get("ate_300k") or 0,
+                            ">300k":   row.get("acima_300k") or 0}
                 else:
                     dist = {"<100k":0,"100-150k":0,"150-200k":0,"200-300k":0,">300k":0}
                 return {"por_zona": por_zona, "evolucao": evolucao, "distribuicao": dist}
@@ -2041,7 +2046,11 @@ def _titulo_do_slug(url):
 def _melhor_titulo(titulo, link):
     """Se o título for lixo/genérico, tenta reconstruí-lo a partir do URL."""
     t = (titulo or "").strip()
-    if not t or len(t) < 5 or _TITULOS_A_REPARAR.search(t):
+    # Também repara títulos que são o nome da agência ("KW Portugal", "LNHouse"):
+    # se o URL tiver slug útil, o imóvel é recuperado; senão fica igual (rejeitado
+    # pelo validar como antes — sem regressão).
+    e_agencia = t.lower() in TITULOS_GENERICOS
+    if not t or len(t) < 5 or e_agencia or _TITULOS_A_REPARAR.search(t):
         return _titulo_do_slug(link) or t or "Sem título"
     return t
 
@@ -2925,7 +2934,14 @@ def scrape_playwright_html(nome, url, sel, zona, perfil):
             # Primary: extract from cards with links
             found_from_cards = 0
             for card in cards:
-                lt  = card.select_one("a[href]")
+                # Link pode estar dentro do card, ser o card, ou envolvê-lo.
+                # Sunpoint/Algarve Dream: 12-136 cards, 0 itens, por só
+                # procurarem <a> cá dentro.
+                lt = card.select_one("a[href]")
+                if not lt and card.name == "a" and card.get("href"):
+                    lt = card
+                if not lt:
+                    lt = card.find_parent("a", href=True)
                 if not lt: continue
                 href = lt.get("href","")
                 # Skip social media and non-property links
