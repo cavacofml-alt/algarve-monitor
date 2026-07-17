@@ -1005,9 +1005,26 @@ def proxies_disponiveis():
 # BASE DE DADOS
 # ============================================================
 
+# Pool de conexões: 42 call-sites abriam uma ligação TCP nova cada um.
+# Todos usam "with get_db() as conn:" — o pool.connection() é um context
+# manager compatível, portanto a troca não exige mudar nenhum call-site.
+try:
+    from psycopg_pool import ConnectionPool
+    _PSYCOPG_POOL_OK = True
+except ImportError:
+    _PSYCOPG_POOL_OK = False
+
+_db_pool = None
+
 def get_db():
+    global _db_pool
     if not DATABASE_URL: raise RuntimeError("DATABASE_URL não definida.")
-    return psycopg.connect(DATABASE_URL)
+    if _PSYCOPG_POOL_OK:
+        if _db_pool is None:
+            _db_pool = ConnectionPool(DATABASE_URL, min_size=1, max_size=5,
+                                      kwargs={"autocommit": False})
+        return _db_pool.connection()
+    return psycopg.connect(DATABASE_URL)   # fallback sem pool
 
 def init_db():
     with get_db() as conn:
