@@ -2121,13 +2121,17 @@ def fazer_item(link,titulo,preco,fonte,zona,img=None):
             "area_m2":extrair_area(titulo),"quartos":extrair_quartos(titulo)}
 
 # Palavras que indicam arrendamento — exclui estes imóveis
-PALAVRAS_ARRENDAMENTO = [
+# Detecção de arrendamento por PALAVRA INTEIRA (\b) — o antigo match por
+# substring com "mes" descartava imóveis reais em MESsines; "renda" apanharia
+# "arrendatário" ok mas também nada de Messines. Casos reais nos logs 20/07.
+PALAVRAS_ARRENDAMENTO = [   # mantido para retrocompatibilidade de imports
     "arrendar","arrendamento","arrendado","aluguer","alugar","aluga-se",
-    "renda","rent","rental","arenda","para arrendar","por mês","€/mês",
-    "/mês","mensal","mes","month","monthly","trespasse","trespass",
-    "arrendamento habitacional","arrendamento comercial",
-    "para arrendamento","disponível para arrendar",
+    "renda","rent","rental","mensal","month","monthly","trespasse",
 ]
+ARRENDAMENTO_RE = re.compile(
+    r"\b(arrendar|arrendamento|arrendado|aluguer|alugar|aluga-se|renda|"
+    r"rent|rental|rentals|mensal|monthly|trespasse|trespass)\b"
+    r"|€\s*/\s*m[eê]s|por\s+m[eê]s|/m[eê]s\b", re.I)
 PALAVRAS_VENDA = ["venda","comprar","compra","vende-se","para venda","sale","sell"]
 
 # Domínios que não são imóveis (redes sociais, etc.)
@@ -2215,9 +2219,9 @@ def validar(item, perfil, _log_descarte=False):
     if (titulo == fonte or titulo.replace(" ","") == fonte.replace(" ","")) and not pv:
         return _rej("título = nome da fonte, sem preço")
 
-    for palavra in PALAVRAS_ARRENDAMENTO:
-        if palavra in titulo or palavra in preco_str:
-            return _rej(f"arrendamento: '{palavra}'")
+    _m = ARRENDAMENTO_RE.search(titulo) or ARRENDAMENTO_RE.search(preco_str)
+    if _m:
+        return _rej(f"arrendamento: '{_m.group(0)}'")
 
     if any(x in link for x in ["/arrendar/","/arrendamento/","/alugar/","/rent/"]):
         return _rej("URL de arrendamento")
@@ -3103,7 +3107,10 @@ def scrape_playwright_html(nome, url, sel, zona, perfil):
                 # titulo==fonte. Deixar vazio -> _melhor_titulo() deriva do slug do URL.
                 # EGO (Sunpoint/A.Unique) traz o título completo no atributo
                 # title do anchor — usar antes de cair no slug
-                titulo = (tt.get_text(strip=True) if tt else "") \
+                _t_el = tt.get_text(strip=True) if tt else ""
+                if _t_el.lower() in ("usado","novo","reservado","vendido","em construção","new","used"):
+                    _t_el = ""   # badge de estado apanhado por [class*='title'] — não é título
+                titulo = _t_el \
                          or (lt.get("title") or "").strip() \
                          or (card.get("title") or "").strip()
                 preco  = pt.get_text(strip=True) if pt else "N/D"
@@ -3126,9 +3133,14 @@ def scrape_playwright_html(nome, url, sel, zona, perfil):
                         _l = _h if _h.startswith("http") else urljoin(url, _h)
                         _tt = _c.select_one("h1,h2,h3,h4,[class*='title'],[class*='nome'],[class*='Title']")
                         _tit = (_tt.get_text(strip=True) if _tt else "") or (_lt.get("title") or "").strip()
-                        _it = fazer_item(_l, _tit, "N/D", nome, zona, None)
+                        # PREÇO REAL do card — a versão com "N/D" mascarava a
+                        # verdadeira causa (Sunpoint: 12 destaques todos >250k)
+                        _pt = _c.select_one("[class*='price'],[class*='preco'],[class*='valor'],[class*='Price']")
+                        _pr = _pt.get_text(strip=True) if _pt else "N/D"
+                        _it = fazer_item(_l, _tit, _pr, nome, zona, None)
                         _v  = validar(_it, perfil, _log_descarte=True)   # loga DESCARTADO [motivo]
-                        log.info(f"    [DIAG {nome}] card[0]: validar={_v} titulo='{_it['titulo'][:45]}' link={_l[:70]}")
+                        log.info(f"    [DIAG {nome}] card[0]: validar={_v} preco='{_pr[:20]}' "
+                                 f"titulo='{_it['titulo'][:40]}' link={_l[:65]}")
 
             # Fallback: if no items found from cards, try link-based extraction
             if not found_from_cards:
@@ -3279,6 +3291,17 @@ SCRAPERS_DESATIVADOS = {
     # Sotheby's e Villas Key: timeouts persistentes
     "Sotheby's",
     "Villas Key",
+
+    # Extracção FUNCIONA (autópsia 20/07: validar correcto) mas o inventário
+    # está fora do perfil: agências 100% Barlavento (Lagos/Vila do Bispo/
+    # Monchique) com destaques todos >250k. Reactivar se o perfil mudar.
+    "Sunpoint Properties",       # Praia da Luz — 12 destaques, todos >250k
+    "Algarve Unique Properties", # Vila do Bispo — idem
+    "Mimosa Properties",         # Lagos — página só devolve menu (207KB)
+
+    # Tripalgarve: 44KB renderizados com ZERO âncoras <a href> (DIAG 20/07)
+    # — conteúdo por JS/onclick sem links; sem forma de extrair
+    "Tripalgarve",
 }
 
 # NOTA: Garvetur, Dils Portugal, Sortami e Boto Properties estavam nesta lista
