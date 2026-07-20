@@ -2644,7 +2644,10 @@ def scrape_generico(nome, urls, perfil, seletores_extra=None):
         items = []
         try:
             items = com_retry(_fetch, n=2)
-            items = [i for i in items if validar(i, perfil)]
+            _raw = len(items)
+            items = [i for i in items if validar(i, perfil, _log_descarte=True)]
+            if _raw and not items:
+                log.info(f"    [DIAG {nome}] {_raw} itens extraídos, todos descartados (motivos acima)")
         except Exception as e:
             log.error(f"  {nome}: {e}")
 
@@ -2750,14 +2753,16 @@ def _api_scrape_html(html, base_url, fonte, extra_sels=None):
             log.info(f"    {fonte}: {len(items)} links por keywords de URL (validar filtra)")
 
     # ── DIAG: HTML grande, zero itens → mostrar os padrões de href reais ──
-    if not items and len(html) > 50000:
+    if not items and len(html) > 20000:
         from collections import Counter
+        from urllib.parse import urlparse as _up
         segs = Counter()
         for a in soup.select("a[href]")[:400]:
             h = (a.get("href") or "").strip()
-            if h.startswith(("http","/")) and len(h) > 1:
-                partes = [s for s in h.split("/") if s and "." not in s[:12]]
-                if partes: segs[partes[0][:25]] += 1
+            if not h or len(h) < 2: continue
+            path = _up(h).path if h.startswith("http") else h   # absolutos → só o path
+            partes = [s for s in path.split("/") if s]
+            if partes: segs[partes[0][:25]] += 1
         top = segs.most_common(8)
         log.info(f"    [DIAG {fonte}] 0 itens de {len(html)//1024}KB. Padrões de href: {top}")
     return items
@@ -3096,7 +3101,11 @@ def scrape_playwright_html(nome, url, sel, zona, perfil):
                 img = card.select_one("img[src]")
                 # NÃO usar `nome` (a fonte) como fallback: validar() rejeita
                 # titulo==fonte. Deixar vazio -> _melhor_titulo() deriva do slug do URL.
-                titulo = tt.get_text(strip=True) if tt else ""
+                # EGO (Sunpoint/A.Unique) traz o título completo no atributo
+                # title do anchor — usar antes de cair no slug
+                titulo = (tt.get_text(strip=True) if tt else "") \
+                         or (lt.get("title") or "").strip() \
+                         or (card.get("title") or "").strip()
                 preco  = pt.get_text(strip=True) if pt else "N/D"
                 imagem = img.get("src") or img.get("data-src","") if img else None
                 item = fazer_item(link, titulo, preco, nome, zona, imagem)
@@ -3104,10 +3113,22 @@ def scrape_playwright_html(nome, url, sel, zona, perfil):
                     items.append(item)
                     found_from_cards += 1
             if cards and found_from_cards == 0 and _debug_card is not None:
-                _snippet = str(_debug_card)[:600].replace("\n", " ")
-                _tem_a = bool(_debug_card.select_one("a[href]") or _debug_card.find_parent("a", href=True))
-                log.info(f"    [DIAG {nome}] {len(cards)} cards, 0 itens | card tem <a>: {_tem_a}")
-                log.info(f"    [DIAG {nome}] 1º card: {_snippet}")
+                # Autópsia do card[0]: repete os passos e loga onde morreu
+                _c = _debug_card
+                _lt = _apanhar_link(_c)
+                if _lt is None:
+                    log.info(f"    [DIAG {nome}] card[0] morreu em: _apanhar_link=None | {str(_c)[:250]}")
+                else:
+                    _h = (_lt.get("href") or "")
+                    if any(x in _h.lower() for x in ["facebook","instagram","linkedin","twitter","youtube","mailto","tel:"]):
+                        log.info(f"    [DIAG {nome}] card[0] morreu em: filtro social | href={_h[:80]}")
+                    else:
+                        _l = _h if _h.startswith("http") else urljoin(url, _h)
+                        _tt = _c.select_one("h1,h2,h3,h4,[class*='title'],[class*='nome'],[class*='Title']")
+                        _tit = (_tt.get_text(strip=True) if _tt else "") or (_lt.get("title") or "").strip()
+                        _it = fazer_item(_l, _tit, "N/D", nome, zona, None)
+                        _v  = validar(_it, perfil, _log_descarte=True)   # loga DESCARTADO [motivo]
+                        log.info(f"    [DIAG {nome}] card[0]: validar={_v} titulo='{_it['titulo'][:45]}' link={_l[:70]}")
 
             # Fallback: if no items found from cards, try link-based extraction
             if not found_from_cards:
