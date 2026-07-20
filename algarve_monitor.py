@@ -1505,23 +1505,36 @@ def guardar_imovel(item, perfil_nome, score):
                   json.dumps(item.get("detalhes_extra",{}))))
         conn.commit()
 
-def marcar_removidos(ids_vistos, perfil_nome, total_encontrados=0):
+def marcar_removidos(ids_vistos, perfil_nome, total_encontrados=0, fontes_ok=None):
+    """Marca como removidos os imóveis que desapareceram do site de origem.
+
+    fontes_ok: fontes que devolveram ≥1 item NESTA ronda. Um imóvel só é
+    marcado removido se a sua fonte respondeu — quando um site inteiro falha
+    (ex.: SuperCasa bloqueada com 403), o inventário dele NÃO desaparece do
+    mercado; ficava tudo "Removido" e na ronda seguinte "Reativado" (o
+    carrossel de 315 removidos / 145 reativados visível no dashboard)."""
     if 0 < total_encontrados < 10:
         log.warning(f"  Só {total_encontrados} items — a saltar marcar_removidos")
         return []
     removidos = []
+    saltados_fonte_falhada = 0
     with get_db() as conn:
         with conn.cursor(row_factory=psycopg_rows.dict_row) as cur:
             cur.execute("""
-                SELECT id,titulo,link,zona FROM imoveis
+                SELECT id,titulo,link,zona,fonte FROM imoveis
                 WHERE perfil_nome=%s AND disponivel=TRUE
                 AND atualizado_em < NOW()-INTERVAL '12 hours'
             """, (perfil_nome,))
             for c in cur.fetchall():
+                if fontes_ok is not None and c.get("fonte") and c["fonte"] not in fontes_ok:
+                    saltados_fonte_falhada += 1
+                    continue   # a fonte falhou a ronda — não é o imóvel que saiu
                 if c["id"] not in ids_vistos:
                     cur.execute("UPDATE imoveis SET disponivel=FALSE,removido_em=NOW() WHERE id=%s",(c["id"],))
                     removidos.append(dict(c))
         conn.commit()
+    if saltados_fonte_falhada:
+        log.info(f"  marcar_removidos: {saltados_fonte_falhada} imóveis poupados (fonte falhou a ronda)")
     return removidos
 
 def marcar_reativado(imovel_id):
@@ -1749,6 +1762,11 @@ def extrair_detalhes_idealista(link):
         for item in soup.select(".details-property_features li, .feature"):
             txt = item.get_text(strip=True)
             if m := re.search(r"(\d{1,6})\s*m[²2]",txt,re.I): detalhes["area_m2"]=_int_seguro(m.group(1), 5, 200_000)
+            # Preço da página de detalhe — ancorado no € (o parser genérico
+            # apanharia refs/ids; ancorar no símbolo evita falsos positivos)
+            if m := re.search(r"(\\d{1,3}(?:[\\.\\s\\u00a0]\\d{3})+|\\d{4,8})\\s*€|€\\s*(\\d{1,3}(?:[\\.\\s\\u00a0]\\d{3})+|\\d{4,8})", txt):
+                _pv = extrair_preco_valor((m.group(1) or m.group(2)) + " €")
+                if _pv: detalhes["preco"] = f"{_pv:,}".replace(",", ".") + " €"
             if (m := re.search(r"(\d{4})",txt)) and "constru" in txt.lower(): detalhes["ano_construcao"]=_int_seguro(m.group(1), 1500, 2100)
         # Descrição
         desc = soup.select_one(".comment .description, #description")
@@ -1775,6 +1793,11 @@ def extrair_detalhes_imovirtual(link):
         for item in soup.select("[aria-label], .listing-item-info"):
             txt = item.get_text(strip=True)
             if m := re.search(r"(\d{1,6})\s*m[²2]",txt,re.I): detalhes["area_m2"]=_int_seguro(m.group(1), 5, 200_000)
+            # Preço da página de detalhe — ancorado no € (o parser genérico
+            # apanharia refs/ids; ancorar no símbolo evita falsos positivos)
+            if m := re.search(r"(\\d{1,3}(?:[\\.\\s\\u00a0]\\d{3})+|\\d{4,8})\\s*€|€\\s*(\\d{1,3}(?:[\\.\\s\\u00a0]\\d{3})+|\\d{4,8})", txt):
+                _pv = extrair_preco_valor((m.group(1) or m.group(2)) + " €")
+                if _pv: detalhes["preco"] = f"{_pv:,}".replace(",", ".") + " €"
         desc = soup.select_one("[data-cy='advert-description']")
         if desc: detalhes["descricao"] = desc.get_text(strip=True)[:500]
         imgs = [img.get("src") for img in soup.select("img[data-cy='gallery-image']") if img.get("src")]
@@ -1816,6 +1839,11 @@ def enriquecer_com_detalhes(item):
     if "idealista" in link:       extra = extrair_detalhes_idealista(link)
     elif "imovirtual" in link:    extra = extrair_detalhes_imovirtual(link)
     else:                         extra = extrair_detalhes_generico(link)
+    # Preço: "N/D" conta como vazio — sem isto, o preço da página de
+    # detalhe nunca substituía o N/D dos itens do fallback de links
+    if extra.get("preco") and (item.get("preco") or "N/D") in ("N/D", "", None):
+        item["preco"] = extra["preco"]
+        item["preco_valor"] = extrair_preco_valor(extra["preco"])
     for k,v in extra.items():
         if v and not item.get(k): item[k] = v
     if extra.get("imagens") and not item.get("imagem_url"):
@@ -3567,7 +3595,9 @@ def verificar_perfil(perfil):
             if disp_ant==False:
                 marcar_reativado(item["id"]); reativados.append(item)
 
-    removidos=marcar_removidos(ids_ronda,perfil["nome"],total_encontrados=len(todos))
+    _fontes_ok = {t.get("fonte") for t in todos if t.get("fonte")}
+    removidos=marcar_removidos(ids_ronda,perfil["nome"],total_encontrados=len(todos),
+                               fontes_ok=_fontes_ok)
     atualizar_snapshot_mercado(perfil["nome"])
     log.info(f"  N:{len(novos)} B:{len(baixas)} R:{len(reativados)} Rem:{len(removidos)}")
 
