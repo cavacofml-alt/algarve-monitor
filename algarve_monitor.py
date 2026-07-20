@@ -1450,9 +1450,23 @@ def imovel_existe(imovel_id):
             row = cur.fetchone()
             return (row[0], row[1]) if row else (None, None)
 
+def _int_seguro(v, lo, hi):
+    """int dentro de [lo, hi]; fora → None. Protege colunas INTEGER do Postgres:
+    a 20/07 um valor colado da página de detalhe deu NumericValueOutOfRange
+    em guardar_imovel e matou a ronda inteira."""
+    try:
+        v = int(v)
+    except (TypeError, ValueError):
+        return None
+    return v if lo <= v <= hi else None
+
 def guardar_imovel(item, perfil_nome, score):
-    pv  = item.get("preco_valor") or extrair_preco_valor(item.get("preco"))
-    a   = item.get("area_m2");  pm2 = int(pv/a) if pv and a else None
+    pv  = _int_seguro(item.get("preco_valor") or extrair_preco_valor(item.get("preco")),
+                      1_000, 50_000_000)
+    a   = _int_seguro(item.get("area_m2"), 5, 200_000)
+    pm2 = _int_seguro(int(pv/a), 1, 1_000_000) if pv and a else None
+    quartos = _int_seguro(item.get("quartos"), 0, 20)
+    ano     = _int_seguro(item.get("ano_construcao"), 1500, 2100)
 
     # Geocodifica se não tem coordenadas
     if not item.get("lat") and not item.get("lng"):
@@ -1484,7 +1498,7 @@ def guardar_imovel(item, perfil_nome, score):
                     score=EXCLUDED.score, disponivel=TRUE, atualizado_em=NOW(),
                     detalhes_extra=EXCLUDED.detalhes_extra
             """, (item["id"],perfil_nome,item.get("titulo"),item.get("preco"),pv,a,pm2,
-                  item.get("quartos"),item.get("ano_construcao"),item.get("descricao"),
+                  quartos,ano,item.get("descricao"),
                   item.get("lat"),item.get("lng"),item.get("morada"),
                   item.get("link"),item.get("fonte"),item.get("zona"),
                   item.get("imagem_url"),item.get("imagens",[]),score,
@@ -1734,8 +1748,8 @@ def extrair_detalhes_idealista(link):
         # Área
         for item in soup.select(".details-property_features li, .feature"):
             txt = item.get_text(strip=True)
-            if m := re.search(r"(\d+)\s*m[²2]",txt,re.I): detalhes["area_m2"]=int(m.group(1))
-            if (m := re.search(r"(\d{4})",txt)) and "constru" in txt.lower(): detalhes["ano_construcao"]=int(m.group(1))
+            if m := re.search(r"(\d{1,6})\s*m[²2]",txt,re.I): detalhes["area_m2"]=_int_seguro(m.group(1), 5, 200_000)
+            if (m := re.search(r"(\d{4})",txt)) and "constru" in txt.lower(): detalhes["ano_construcao"]=_int_seguro(m.group(1), 1500, 2100)
         # Descrição
         desc = soup.select_one(".comment .description, #description")
         if desc: detalhes["descricao"] = desc.get_text(strip=True)[:500]
@@ -1760,7 +1774,7 @@ def extrair_detalhes_imovirtual(link):
         detalhes = {}
         for item in soup.select("[aria-label], .listing-item-info"):
             txt = item.get_text(strip=True)
-            if m := re.search(r"(\d+)\s*m[²2]",txt,re.I): detalhes["area_m2"]=int(m.group(1))
+            if m := re.search(r"(\d{1,6})\s*m[²2]",txt,re.I): detalhes["area_m2"]=_int_seguro(m.group(1), 5, 200_000)
         desc = soup.select_one("[data-cy='advert-description']")
         if desc: detalhes["descricao"] = desc.get_text(strip=True)[:500]
         imgs = [img.get("src") for img in soup.select("img[data-cy='gallery-image']") if img.get("src")]
@@ -1780,9 +1794,9 @@ def extrair_detalhes_generico(link):
         detalhes = {}
         texto_completo = soup.get_text(" ")
         if m := re.search(r"(\d{2,3})\s*m[²2]", texto_completo, re.I):
-            detalhes["area_m2"] = int(m.group(1))
+            detalhes["area_m2"] = _int_seguro(m.group(1), 5, 200_000)
         if m := re.search(r"(19[5-9]\d|20[0-2]\d)", texto_completo):
-            detalhes["ano_construcao"] = int(m.group(1))
+            detalhes["ano_construcao"] = _int_seguro(m.group(1), 1500, 2100)
         desc_el = soup.select_one(".description,.descricao,.detail-description,#description,[class*='desc']")
         if desc_el: detalhes["descricao"] = desc_el.get_text(strip=True)[:500]
         imgs = []
@@ -3537,9 +3551,15 @@ def verificar_perfil(perfil):
         score=calcular_score(item,perfil); item["score"]=score
         p_ant,disp_ant=imovel_existe(item["id"])
         if p_ant is None:
-            guardar_imovel(item,perfil["nome"],score); novos.append(item)
+            try:
+                guardar_imovel(item,perfil["nome"],score); novos.append(item)
+            except Exception as e:
+                log.error(f"  guardar falhou [{item.get('fonte','?')}] {str(item.get('id',''))[:60]}: {e}")
         else:
-            guardar_imovel(item,perfil["nome"],score)
+            try:
+                guardar_imovel(item,perfil["nome"],score)
+            except Exception as e:
+                log.error(f"  guardar falhou [{item.get('fonte','?')}] {str(item.get('id',''))[:60]}: {e}")
             pv_n=extrair_preco_valor(item["preco"]); pv_a=extrair_preco_valor(p_ant)
             if pv_n and pv_a and pv_n<pv_a:
                 registar_mudanca_preco(item["id"],p_ant,item["preco"])
