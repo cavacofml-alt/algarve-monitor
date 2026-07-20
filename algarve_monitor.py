@@ -2594,17 +2594,38 @@ def scrape_generico(nome, urls, perfil, seletores_extra=None):
     urls: lista de URLs a verificar (uma por zona/tipo)
     """
     resultados = []
+    _pw_fallbacks = 0   # máx. 2 por site para respeitar o timeout de 120s/scraper
     for url in urls:
         def _fetch(u=url):
             r = proxied_get(u, render=True)
             return _api_scrape_html(r.text, u, nome, seletores_extra)
+        items = []
         try:
             items = com_retry(_fetch, n=2)
             items = [i for i in items if validar(i, perfil)]
-            log.info(f"    {nome}: {len(items)} items de {url[:60]}")
-            resultados.extend(items)
         except Exception as e:
             log.error(f"  {nome}: {e}")
+
+        # ── Fallback de renderização JS ─────────────────────────────
+        # Estes sites dependiam do render=true do ScraperAPI. Com os renderers
+        # pagos esgotados (16/07), o HTML chega sem os anúncios (SPA) → 0 cards.
+        # Ex.: Inside-Villas dava 24 até 13/07, zero desde que as keys acabaram.
+        # O Browserless continua disponível — renderiza uma vez por URL falhado.
+        if not items and PLAYWRIGHT_AVAILABLE and _pw_fallbacks < 2:
+            _pw_fallbacks += 1
+            try:
+                with _playwright_semaphore:   # Browserless free: 1 sessão de cada vez
+                    html_pw = _pw_open_page(nome, url, "a[href]")
+                if html_pw and len(html_pw) > 3000:
+                    items = _api_scrape_html(html_pw, url, nome, seletores_extra)
+                    items = [i for i in items if validar(i, perfil)]
+                    if items:
+                        log.info(f"    {nome}: {len(items)} items via render JS (fallback)")
+            except Exception as e:
+                log.debug(f"  {nome} fallback JS: {e}")
+
+        log.info(f"    {nome}: {len(items)} items de {url[:60]}")
+        resultados.extend(items)
         time.sleep(random.uniform(2, 4))
     return resultados, 1
 
