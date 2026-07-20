@@ -2756,6 +2756,20 @@ def _api_scrape_html(html, base_url, fonte, extra_sels=None):
         if items:
             log.info(f"    {fonte}: {len(items)} links por keywords de URL (validar filtra)")
 
+    # ── Último recurso: URLs embebidos em payloads JS/JSON ──
+    if not items:
+        _PAYLOAD_RE = re.compile(
+            r"""["'](/(?:imovel|imoveis|property|properties|propriedade|detalhe)/[a-z0-9\-_/]{8,120})["']""", re.I)
+        _seen_pl = set()
+        for _m in _PAYLOAD_RE.finditer(html):
+            _u = urljoin(base_url, _m.group(1))
+            if _u in _seen_pl: continue
+            _seen_pl.add(_u)
+            items.append(fazer_item(_u, "", "N/D", fonte, zona, None))
+            if len(_seen_pl) >= 60: break
+        if items:
+            log.info(f"    {fonte}: {len(items)} itens de payloads JS (regex)")
+
     # ── DIAG: HTML grande, zero itens → mostrar os padrões de href reais ──
     if not items and len(html) > 20000:
         from collections import Counter
@@ -2972,11 +2986,19 @@ def _pw_open_page_sync(nome, url, sel):
                 try: page.wait_for_selector(sel, timeout=8000)
                 except: pass
                 page.wait_for_timeout(2000)
-                for pos in [0.3, 0.6, 1.0]:
-                    try:
-                        page.evaluate(f"window.scrollTo(0,document.body.scrollHeight*{pos})")
-                        page.wait_for_timeout(700)
-                    except: break
+                # Scroll adaptativo: EGO e outros carregam cards por lazy-load;
+                # 3 passos fixos deixavam só o 1º lote (12). Continua enquanto
+                # o nº de elementos do seletor crescer (máx 8 ciclos).
+                try:
+                    _n_ant = -1
+                    for _ci in range(8):
+                        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                        page.wait_for_timeout(900)
+                        try: _n = page.locator(sel).count()
+                        except Exception: _n = -2
+                        if _n <= _n_ant: break
+                        _n_ant = _n
+                except Exception: pass
                 html = page.content()
                 log.info(f"    {nome}: {len(html):,} chars HTML")
                 return html
@@ -3035,11 +3057,17 @@ def _pw_open_page(nome, url, sel):
         try: page.wait_for_selector(sel, timeout=8000)
         except: pass
         page.wait_for_timeout(2000)
-        for pos in [0.3, 0.6, 1.0]:
-            try:
-                page.evaluate(f"window.scrollTo(0, document.body.scrollHeight*{pos})")
-                page.wait_for_timeout(700)
-            except: break
+        # Scroll adaptativo (lazy-load) — igual ao branch partilhado
+        try:
+            _n_ant = -1
+            for _ci in range(8):
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                page.wait_for_timeout(900)
+                try: _n = page.locator(sel).count()
+                except Exception: _n = -2
+                if _n <= _n_ant: break
+                _n_ant = _n
+        except Exception: pass
         html = page.content()
         log.info(f"    {nome}: {len(html):,} chars HTML")
         if len(html) < 5000:
@@ -3080,11 +3108,19 @@ def scrape_playwright_html(nome, url, sel, zona, perfil):
             cards = soup.select(sel)
             log.info(f"    Playwright {nome}: {len(cards)} cards")
             if not cards:
-                # 0 cards: mostra que classes existem no topo para ajustar o seletor
                 _classes = sorted({c for el in soup.select("[class]")[:200]
                                    for c in (el.get("class") or [])
                                    if any(k in c.lower() for k in ("prop","card","list","item","result"))})[:15]
-                log.info(f"    [DIAG {nome}] seletor '{sel}' → 0. Classes candidatas: {_classes}")
+                from collections import Counter as _Ct
+                from urllib.parse import urlparse as _up2
+                _segs = _Ct()
+                for _a in soup.select("a[href]")[:400]:
+                    _h = (_a.get("href") or "").strip()
+                    if not _h or len(_h) < 2: continue
+                    _pt = _up2(_h).path if _h.startswith("http") else _h
+                    _ps = [s for s in _pt.split("/") if s]
+                    if _ps: _segs[_ps[0][:25]] += 1
+                log.info(f"    [DIAG {nome}] seletor '{sel}' → 0. Classes: {_classes} | hrefs: {_segs.most_common(6)}")
             
             # Primary: extract from cards with links
             found_from_cards = 0
@@ -3119,6 +3155,24 @@ def scrape_playwright_html(nome, url, sel, zona, perfil):
                 if validar(item, perfil):
                     items.append(item)
                     found_from_cards += 1
+            # ── Último recurso: URLs embebidos em payloads JS/JSON ──
+            # Sites como o Tripalgarve têm 0 âncoras <a href> (navegação por
+            # onclick), mas os slugs dos anúncios estão no HTML em strings.
+            if not items:
+                _PAYLOAD_RE = re.compile(
+                    r"""["'](/(?:imovel|imoveis|property|properties|propriedade|detalhe)/[a-z0-9\-_/]{8,120})["']""", re.I)
+                _seen_pl = set()
+                for _m in _PAYLOAD_RE.finditer(html):
+                    _u = urljoin(url, _m.group(1))
+                    if _u in _seen_pl: continue
+                    _seen_pl.add(_u)
+                    _it = fazer_item(_u, "", "N/D", nome, zona, None)
+                    if validar(_it, perfil):
+                        items.append(_it)
+                    if len(_seen_pl) >= 60: break
+                if items:
+                    log.info(f"    {nome}: {len(items)} itens de payloads JS (regex)")
+
             if cards and found_from_cards == 0 and _debug_card is not None:
                 # Autópsia do card[0]: repete os passos e loga onde morreu
                 _c = _debug_card
@@ -3179,11 +3233,15 @@ def scrape_boto(p):
     )
 
 def scrape_sunpoint(p):
-    return scrape_playwright_html(
-        "Sunpoint Properties",
-        "https://www.sunpoint.pt/propriedades",
-        "a[href*='/imovel/']", "Barlavento", p
-    )
+    # EGO: páginas por localidade têm listas maiores que os destaques
+    res=[]; 
+    for u in ["https://www.sunpoint.pt/propriedades",
+              "https://www.sunpoint.pt/lagos"]:
+        its,_=scrape_playwright_html("Sunpoint Properties", u,
+                                     "a[href*='/imovel/']", "Barlavento", p)
+        res.extend(its)
+        if len(res) >= 5: break
+    return res,1
 
 def scrape_algarveuniqueproperties(p):
     return scrape_playwright_html(
@@ -3277,31 +3335,12 @@ def scrape_algarvemanta(p):
 # ── SITES DESATIVADOS (falham consistentemente) ────────────
 # Timeout persistente — URLs provavelmente errados ou bloqueio total
 SCRAPERS_DESATIVADOS = {
-    # Lista reconstruída a partir da evidência dos logs de 15/07/2026.
-    # NÃO adicionar por suposição — só com prova de que o site não devolve nada.
-    # Reavaliar periodicamente: sites mudam.
-
-    # Devolvem HTML vazio/erro — o site não responde com conteúdo útil.
-    # (o nº de chars é o que o Playwright recebeu de facto)
-    "Vernon Algarve",      # 487 chars — e opera no Barlavento, fora do perfil
-    "D'Alma Portuguesa",   # 487 chars
-    "Your Luxury Property",# 2.046 chars — página de erro
-    "Barra Prime",         # 4.426 chars — página de erro
-
-    # Sotheby's e Villas Key: timeouts persistentes
-    "Sotheby's",
-    "Villas Key",
-
-    # Extracção FUNCIONA (autópsia 20/07: validar correcto) mas o inventário
-    # está fora do perfil: agências 100% Barlavento (Lagos/Vila do Bispo/
-    # Monchique) com destaques todos >250k. Reactivar se o perfil mudar.
-    "Sunpoint Properties",       # Praia da Luz — 12 destaques, todos >250k
-    "Algarve Unique Properties", # Vila do Bispo — idem
-    "Mimosa Properties",         # Lagos — página só devolve menu (207KB)
-
-    # Tripalgarve: 44KB renderizados com ZERO âncoras <a href> (DIAG 20/07)
-    # — conteúdo por JS/onclick sem links; sem forma de extrair
-    "Tripalgarve",
+    # PROBATION 20/07: todos reactivados a pedido, com capacidades novas
+    # (scroll adaptativo p/ lazy-load, payloads JS, DIAG de hrefs).
+    # A ronda seguinte decide com evidência quem volta a esta lista.
+    # Histórico: Sunpoint/A.Unique/Mimosa/Vernon = Barlavento; Tripalgarve =
+    # zero âncoras; D'Alma/Barra Prime/Your Luxury = HTML vazio via chromium
+    # local ANTES do Browserless existir; Sotheby's/Villas Key = timeouts HTTP.
 }
 
 # NOTA: Garvetur, Dils Portugal, Sortami e Boto Properties estavam nesta lista
