@@ -2629,6 +2629,23 @@ def scrape_generico(nome, urls, perfil, seletores_extra=None):
         time.sleep(random.uniform(2, 4))
     return resultados, 1
 
+def _apanhar_link(card):
+    """Escolhe a âncora com href útil num card.
+    Ordem: o próprio card se for <a> (plataforma EGO: Sunpoint/Algarve Unique),
+    senão a 1ª âncora interior com href real (ignora '#', javascript:, mailto:
+    — as setas de slideshow/favoritos vinham primeiro e o '#' era rejeitado
+    pelo URLS_LIXO_RE), senão a âncora-pai que envolve o card."""
+    def _util(h):
+        h = (h or "").strip().lower()
+        return bool(h) and h != "#" and not h.startswith(("javascript", "mailto", "tel:"))
+    if card.name == "a" and _util(card.get("href")):
+        return card
+    for a in card.select("a[href]"):
+        if _util(a.get("href")):
+            return a
+    pai = card.find_parent("a", href=True)
+    return pai if (pai is not None and _util(pai.get("href"))) else None
+
 def _api_scrape_html(html, base_url, fonte, extra_sels=None):
     """Extrai imóveis de HTML usando seletores CSS."""
     if not html or len(html) < 200:
@@ -2653,19 +2670,54 @@ def _api_scrape_html(html, base_url, fonte, extra_sels=None):
     for sel in sels:
         found = soup.select(sel)
         for it in found:
-            lt  = it.select_one("a[href]")
+            lt  = _apanhar_link(it)
             pt  = it.select_one("[class*='price'],[class*='preco'],.price,.preco")
             tt  = it.select_one("h1,h2,h3,h4,[class*='title'],[class*='name']")
             img = it.select_one("img[src]")
-            if not lt or not lt.get("href"): continue
+            if not lt: continue
             href = lt.get("href","")
-            link = href if href.startswith("http") else base_url.split("/")[0]+"//"+base_url.split("/")[2]+href
-            titulo = tt.get_text(strip=True) if tt else fonte
+            link = href if href.startswith("http") else urljoin(base_url, href)
+            titulo = tt.get_text(strip=True) if tt else ""   # vazio → slug repara
             preco  = pt.get_text(strip=True) if pt else "N/D"
-            imagem = img.get("src") or img.get("data-src","") if img else None
+            imagem = (img.get("src") or img.get("data-src","")) if img else None
             item = fazer_item(link, titulo, preco, fonte, zona, imagem)
             items.append(item)
         if items: break
+
+    # ── Fallback por keywords de URL ─────────────────────────
+    # Os 14 sites SPA renderizados pelo Browserless traziam 100-700KB de HTML
+    # mas 0 itens: os seletores genéricos de cards não batem com o markup deles.
+    # Os links de anúncio, esses, seguem padrões universais — extraímos por aí.
+    if not items:
+        keywords = ["imovel","imoveis/","property","properties/","propriedade",
+                    "detalhes","detalhe/","for-sale","listing","ficha","/ref",
+                    "apartamento","moradia","villa"]
+        seen = set()
+        for a in soup.select("a[href]"):
+            href = (a.get("href") or "").strip()
+            if not href or len(href) < 15: continue
+            if not any(k in href.lower() for k in keywords): continue
+            link = href if href.startswith("http") else urljoin(base_url, href)
+            if link in seen: continue
+            seen.add(link)
+            titulo = (a.get("title") or a.get_text(strip=True) or "")[:120]
+            item = fazer_item(link, titulo, "N/D", fonte, zona, None)
+            items.append(item)
+            if len(seen) >= 60: break   # tecto de segurança
+        if items:
+            log.info(f"    {fonte}: {len(items)} links por keywords de URL (validar filtra)")
+
+    # ── DIAG: HTML grande, zero itens → mostrar os padrões de href reais ──
+    if not items and len(html) > 50000:
+        from collections import Counter
+        segs = Counter()
+        for a in soup.select("a[href]")[:400]:
+            h = (a.get("href") or "").strip()
+            if h.startswith(("http","/")) and len(h) > 1:
+                partes = [s for s in h.split("/") if s and "." not in s[:12]]
+                if partes: segs[partes[0][:25]] += 1
+        top = segs.most_common(8)
+        log.info(f"    [DIAG {fonte}] 0 itens de {len(html)//1024}KB. Padrões de href: {top}")
     return items
 
 # ── REDES NACIONAIS/INTERNACIONAIS ───────────────────────
@@ -2990,11 +3042,7 @@ def scrape_playwright_html(nome, url, sel, zona, perfil):
                 # Link pode estar dentro do card, ser o card, ou envolvê-lo.
                 # Sunpoint/Algarve Dream: 12-136 cards, 0 itens, por só
                 # procurarem <a> cá dentro.
-                lt = card.select_one("a[href]")
-                if not lt and card.name == "a" and card.get("href"):
-                    lt = card
-                if not lt:
-                    lt = card.find_parent("a", href=True)
+                lt = _apanhar_link(card)
                 if not lt: continue
                 href = lt.get("href","")
                 # Skip social media and non-property links
@@ -3038,7 +3086,9 @@ def scrape_playwright_html(nome, url, sel, zona, perfil):
                         if parent: parent = parent.parent
                     pt = parent.select_one("[class*='price'],[class*='preco'],[class*='valor']") if parent else None
                     tt = parent.select_one("h1,h2,h3,h4,[class*='title']") if parent else None
-                    titulo = tt.get_text(strip=True) if tt else nome
+                    # titulo=nome era rejeitado por validar (titulo==fonte);
+                    # vazio → _melhor_titulo deriva do slug do URL
+                    titulo = tt.get_text(strip=True) if tt else ""
                     preco  = pt.get_text(strip=True) if pt else "N/D"
                     item = fazer_item(link, titulo, preco, nome, zona, None)
                     if validar(item, perfil): items.append(item)
