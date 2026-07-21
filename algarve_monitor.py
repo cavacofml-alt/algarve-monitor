@@ -2921,8 +2921,19 @@ def scrape_algarvedream(p):
 # ── BARLAVENTO ───────────────────────────────────────────
 
 def scrape_mimosa(p):
-    urls=[f"https://www.mimosaproperties.com/properties-for-sale?max_price={p['preco_max']}&bedrooms={p['quartos_min']}"]
-    return scrape_generico("Mimosa Properties", urls, p)
+    """Mimosa (Lagos, Barlavento): é um site eGO Real Estate — os URLs antigos
+    (/properties-for-sale?..., /procuro-imovel-...) devolviam só o menu.
+    Caminhos reais confirmados por pesquisa 20/07."""
+    res=[]
+    for u in ["https://www.mimosaproperties.com/lagos-mimosaproperties",
+              "https://www.mimosaproperties.com/en-gb/properties/house"]:
+        its,_ = scrape_playwright_html("Mimosa Properties", u,
+                    "a[href*='/imovel/'], a[href*='/property/'], a[href*='/properties/']",
+                    "Barlavento", p)
+        res.extend(its)
+        if len(res) >= 5: break
+    return res, 1
+
 
 def scrape_vernon(p):
     urls=[f"https://www.vernonalgarve.com/for-sale?max_price={p['preco_max']}&bedrooms={p['quartos_min']}"]
@@ -3301,8 +3312,22 @@ def scrape_qpsavills(p):
     return scrape_generico("QP Savills", urls, p)
 
 def scrape_jppproperties(p):
-    urls=[f"https://www.jppproperties.com/buy?max_price={p['preco_max']}&bedrooms={p['quartos_min']}"]
-    return scrape_generico("JPP Properties", urls, p)
+    """JPP (Vilamoura/central): o URL antigo /buy?... devolvia 404.
+    Caminhos reais confirmados por pesquisa 20/07 (WordPress):
+    /en/properties_status/buy/ e /en/properties/."""
+    res=[]
+    for u in ["https://jppproperties.com/en/properties_status/buy/",
+              "https://jppproperties.com/en/properties/"]:
+        try:
+            its = scrape_generico("JPP Properties", [u], p,
+                                  seletores_extra=["article",".property-item",".listing-item"])
+            if isinstance(its, tuple): its = its[0]
+            res.extend(its)
+            if res: break
+        except Exception as e:
+            log.error(f"JPP: {e}")
+    return res, 1
+
 
 def scrape_yourluxury(p):
     """Your Luxury Property — Playwright com URL correta."""
