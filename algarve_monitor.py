@@ -2796,40 +2796,24 @@ def scrape_coldwell(p):
     return scrape_generico("Coldwell Banker", urls, p)
 
 def scrape_sothebys(p):
-    """Sotheby's — Playwright com ignore_https_errors (certificado SSL inválido)."""
-    if not PLAYWRIGHT_AVAILABLE: return [],0
-    items = []
-    with _playwright_semaphore:
+    """Portugal Sotheby's International Realty.
+
+    Domínio correcto: sothebysrealtypt.com (o antigo sothebysrealty.pt tem
+    certificado SSL inválido — ERR_CERT_COMMON_NAME_INVALID em 21/07 e daí
+    os timeouts crónicos que motivaram a desactivação). URL confirmado em
+    produção via pesquisa web: `.../properties/sale/-/faro/lagoa-algarve`."""
+    res = []
+    for u in ["https://www.sothebysrealtypt.com/properties/sale/-/faro",
+              "https://www.sothebysrealtypt.com/properties/sale"]:
         try:
-            with sync_playwright() as pw:
-                browser = pw.chromium.launch(
-                    headless=True, executable_path="/usr/bin/chromium",
-                    args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu"])
-                ctx = browser.new_context(
-                    ignore_https_errors=True,
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    locale="pt-PT")
-                page = ctx.new_page()
-                page.goto("https://www.sothebysrealty.pt/imoveis/compra",
-                          wait_until="domcontentloaded", timeout=20000)
-                page.wait_for_timeout(3000)
-                html = page.content()
-                browser.close()
-            soup = safe_soup(html, "Sotheby's")
-            if soup:
-                for card in soup.select("[class*='property'],[class*='listing'],article"):
-                    lt = card.select_one("a[href]")
-                    pt = card.select_one("[class*='price']")
-                    tt = card.select_one("h1,h2,h3,h4,[class*='title']")
-                    if not lt: continue
-                    href = lt.get("href","")
-                    link = href if href.startswith("http") else urljoin("https://www.sothebysrealty.pt", href)
-                    item = fazer_item(link, tt.get_text(strip=True) if tt else "Sotheby's",
-                                     pt.get_text(strip=True) if pt else "N/D", "Sotheby's", "Algarve", None)
-                    if validar(item, p): items.append(item)
+            its,_ = scrape_playwright_html("Sotheby's", u,
+                        "a[href*='/property/'], a[href*='/imovel/']",
+                        "Algarve", p)
+            res.extend(its)
+            if len(res) >= 5: break
         except Exception as e:
             log.error(f"  Sotheby's: {e}")
-    return items, 1
+    return res, 1
 
 def scrape_iad(p):
     urls=["https://www.iadportugal.pt/comprar",
@@ -2860,13 +2844,26 @@ def scrape_arcada(p):
 # ── ALGARVE TODA A REGIÃO ────────────────────────────────
 
 def scrape_villaskey(p):
-    """Villas Key — Playwright (connection error via requests)."""
-    return scrape_playwright_html(
-        "Villas Key",
-        "https://www.villaskey.com/en/for-sale",
-        "[class*='property'],[class*='listing'],article,.card",
-        "Algarve", p
-    )
+    """Villas Key (Lagos/Alvor/Lagoa, Sotavento e Barlavento).
+
+    O domínio antigo villaskey.com está expirado (ERR_NAME_NOT_RESOLVED em
+    21/07). O actual — confirmado por pesquisa web 21/07 e por URLs
+    partilhados pelo utilizador — é villaskeyproperty.com. Inventário
+    substancial (156 imóveis no idealista/pro/villaskey, e a listagem raiz
+    tem paginação até pag=22)."""
+    res = []
+    for u in ["https://www.villaskeyproperty.com/imoveis/",
+              "https://www.villaskeyproperty.com/pt-pt/imoveis"]:
+        try:
+            its,_ = scrape_playwright_html("Villas Key", u,
+                        "a[href*='/imovel/'], a[href*='/imoveis/'], "
+                        "[class*='property'], [class*='listing'], article",
+                        "Algarve", p)
+            res.extend(its)
+            if len(res) >= 5: break
+        except Exception as e:
+            log.error(f"  Villas Key: {e}")
+    return res, 1
 
 def scrape_dils(p):
     """Dils Portugal — Playwright (HTTP 200 sem conteúdo via proxy)."""
@@ -3390,10 +3387,6 @@ SCRAPERS_DESATIVADOS = {
     #   onclick. Payload-regex também não bateu; sem forma de extrair URLs.
     "Tripalgarve",
     #
-    # Sotheby's, Villas Key
-    #   Timeouts crónicos, ainda por resolver.
-    "Sotheby's",
-    "Villas Key",
 }
 
 # NOTA: Garvetur, Dils Portugal, Sortami e Boto Properties estavam nesta lista
@@ -3461,9 +3454,9 @@ SCRAPERS=[
     ("Algarve Dream Property",scrape_algarvedream), # ✅ Playwright
     ("Your Luxury Property",scrape_yourluxury), # ✅ Playwright
     ("Dils Portugal",scrape_dils),           # ✅ Playwright
-    # ("Sotheby's",scrape_sothebys),          # ❌ SSL inválido - domínio inacessível
+    ("Sotheby's",scrape_sothebys),
     # ("Chave Nova",scrape_chavanova),        # ❌ ERR_NAME_NOT_RESOLVED - domínio não existe
-    # ("Villas Key",scrape_villaskey),        # ❌ ERR_NAME_NOT_RESOLVED - domínio não existe
+    ("Villas Key",scrape_villaskey),
 ]
 
 # ============================================================
