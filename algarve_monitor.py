@@ -2113,9 +2113,32 @@ def _melhor_titulo(titulo, link):
         return _titulo_do_slug(link) or t or "Sem título"
     return t
 
+def _preco_bonito(preco_raw):
+    """Normaliza a string de preço para exibição.
+    Casa SAPO devolve "comprar85.000 €89.000 €" (CTA + preço colado + preço
+    antigo colado); o dashboard mostrava tudo em bruto. Extrai o 1º valor
+    plausível e formata "85.000 €". Preserva "Sob Consulta"/"N/D"/etc.
+    Aceita cêntimos opcionais ("1.250.000,50 €") sem os incluir no output."""
+    if not preco_raw:
+        return "N/D"
+    s = str(preco_raw).replace("\u00a0"," ").replace("\u202f"," ")
+    _RE = re.compile(
+        r"(\d{1,3}(?:[\.\s]\d{3})+(?:[,\.]\d{1,2})?|\d{4,8}(?:[,\.]\d{1,2})?)\s*€"
+        r"|€\s*(\d{1,3}(?:[\.\s]\d{3})+(?:[,\.]\d{1,2})?|\d{4,8}(?:[,\.]\d{1,2})?)")
+    m = _RE.search(s)
+    if m:
+        raw = m.group(1) or m.group(2)
+        val = re.sub(r"\D","", re.sub(r"[,\.]\d{1,2}$", "", raw))
+        try: n = int(val)
+        except ValueError: return preco_raw
+        if 1000 <= n <= 50_000_000:
+            return f"{n:,}".replace(",", ".") + " €"
+    return preco_raw   # "Sob Consulta", "N/D", texto sem € — preserva
+
 def fazer_item(link,titulo,preco,fonte,zona,img=None):
     pv=extrair_preco_valor(preco)
     titulo=_melhor_titulo(titulo, link)   # repara breadcrumbs/contadores/placeholders
+    preco=_preco_bonito(preco)            # tira "comprar" e preço antigo colado
     return {"id":link,"titulo":titulo,"preco":preco or "N/D",
             "preco_valor":pv,"link":link,"fonte":fonte,"zona":zona,"imagem_url":img,
             "area_m2":extrair_area(titulo),"quartos":extrair_quartos(titulo)}
