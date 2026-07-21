@@ -2806,8 +2806,12 @@ def scrape_sothebys(p):
     for u in ["https://www.sothebysrealtypt.com/properties/sale/-/faro",
               "https://www.sothebysrealtypt.com/properties/sale"]:
         try:
+            # DIAG 21/07 revelou hrefs: [('properties', 41), ...] — o path é
+            # /properties/ (plural, sem "y"), não /property/. Já dava 7 items
+            # via payload-regex mesmo com seletor errado; com o seletor certo
+            # deve subir para dezenas.
             its,_ = scrape_playwright_html("Sotheby's", u,
-                        "a[href*='/property/'], a[href*='/imovel/']",
+                        "a[href*='/properties/']",
                         "Algarve", p)
             res.extend(its)
             if len(res) >= 5: break
@@ -2852,8 +2856,13 @@ def scrape_villaskey(p):
     substancial (156 imóveis no idealista/pro/villaskey, e a listagem raiz
     tem paginação até pag=22)."""
     res = []
-    for u in ["https://www.villaskeyproperty.com/imoveis/",
-              "https://www.villaskeyproperty.com/pt-pt/imoveis"]:
+    # DIAG 21/07: /imoveis/ e /pt-pt/imoveis devolveram 4,426 chars com
+    # hrefs=[] — SPA React que não hidrata sem tempo. Aumentar o wait via
+    # o próprio scrape_playwright_html não é possível daqui, então tentar
+    # o URL com ?lbl= (parâmetro do site) que pré-renderiza no servidor.
+    for u in ["https://www.villaskeyproperty.com/pt-pt/imoveis?lbl=30710",
+              "https://www.villaskeyproperty.com/imoveis/?pag=1",
+              "https://www.villaskeyproperty.com/imoveis/"]:
         try:
             its,_ = scrape_playwright_html("Villas Key", u,
                         "a[href*='/imovel/'], a[href*='/imoveis/'], "
@@ -2924,9 +2933,10 @@ def scrape_algarvedream(p):
 def scrape_mimosa(p):
     """Mimosa (Lagos): DIAG 21/07 mostrou o path real 'imoveis-mimosaproperties'
     entre os hrefs mais frequentes. Os URLs antes usados não existiam."""
+    # DIAG confirmou que 'imoveis-mimosaproperties' aparece nos hrefs (menu)
     res=[]
     for u in ["https://www.mimosaproperties.com/imoveis-mimosaproperties",
-              "https://www.mimosaproperties.com/lagos-mimosaproperties"]:
+              "https://www.mimosaproperties.com/imoveis"]:
         its,_ = scrape_playwright_html("Mimosa Properties", u,
                     "a[href*='/imovel/'], a[href*='/property/'], a[href*='/properties/']",
                     "Barlavento", p)
@@ -3247,10 +3257,14 @@ def scrape_sunpoint(p):
     # EGO: os destaques do site são de luxo (>1M€). Aplica o teto na origem
     # via query string suportada pela plataforma. Evidência 21/07: sem filtro
     # os 12 cards vinham a 1M+ e o validar rejeitava tudo.
-    _pm = p.get("preco_max", 250000)
-    res=[]; 
-    for u in [f"https://www.sunpoint.pt/propriedades?p_max={_pm}",
-              "https://www.sunpoint.pt/lagos"]:
+    # A EGO tem 2 páginas: /propriedades (destaques) e /imoveis-<slug> (listagem
+    # paginada). Testar ambos os slugs prováveis; o validar filtra por preço.
+    # Não uso query-params de preço porque não confirmei o schema da EGO
+    # (?p_max e ?vmax podem ser ignorados pela plataforma).
+    res=[]
+    for u in ["https://www.sunpoint.pt/imoveis-sunpoint",
+              "https://www.sunpoint.pt/imoveis-sunpointproperties",
+              "https://www.sunpoint.pt/propriedades"]:
         its,_=scrape_playwright_html("Sunpoint Properties", u,
                                      "a[href*='/imovel/']", "Barlavento", p)
         res.extend(its)
