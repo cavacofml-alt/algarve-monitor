@@ -2617,15 +2617,19 @@ def scrape_remax(p):
     return res,pags
 
 def scrape_kwportugal(p):
-    """KW é uma SPA Angular: o crawl HTTP só via o menu (250 links de navegação,
-    ~40s desperdiçados por ronda). Passa a renderizar com o browser partilhado e
-    a apanhar apenas links de anúncio. O auto-diagnóstico loga o 1º card se falhar."""
+    """KW Portugal: site novo é uma SPA React (classes Tailwind '!items-baseline'
+    'shadow-card' — nada semântico). Nenhum a[href*='/imovel'] existe.
+    Evidência 21/07: 616KB renderizados, 0 cards. Mas o fallback por keywords
+    de URL ainda encontra links reais (88 resultados nessa mesma ronda), então
+    deixamos passar por lá sem forçar seletor específico."""
     res=[]; pags=0
-    for zs in p["zonas"][:2]:   # 2 zonas para conter o tempo de browser
+    for zs in p["zonas"][:2]:
         zl=TODAS_AS_ZONAS.get(zs,zs)
         url=f"https://www.kwportugal.pt/pt/pesquisa/?localizacao={zs}&tipo=comprar&priceMax={p['preco_max']}"
         try:
-            its,pg=scrape_playwright_html("KW Portugal", url, "a[href*='/imovel']", zl, p)
+            # Seletor 'a' engloba tudo → soup.select devolve todas as âncoras;
+            # o fallback por keywords (imovel/property/...) filtra as boas.
+            its,pg=scrape_playwright_html("KW Portugal", url, "a[href]", zl, p)
             res.extend(its); pags+=pg
         except Exception as e: log.error(f"KW/{zs}: {e}")
     return res,pags
@@ -2921,12 +2925,11 @@ def scrape_algarvedream(p):
 # ── BARLAVENTO ───────────────────────────────────────────
 
 def scrape_mimosa(p):
-    """Mimosa (Lagos, Barlavento): é um site eGO Real Estate — os URLs antigos
-    (/properties-for-sale?..., /procuro-imovel-...) devolviam só o menu.
-    Caminhos reais confirmados por pesquisa 20/07."""
+    """Mimosa (Lagos): DIAG 21/07 mostrou o path real 'imoveis-mimosaproperties'
+    entre os hrefs mais frequentes. Os URLs antes usados não existiam."""
     res=[]
-    for u in ["https://www.mimosaproperties.com/lagos-mimosaproperties",
-              "https://www.mimosaproperties.com/en-gb/properties/house"]:
+    for u in ["https://www.mimosaproperties.com/imoveis-mimosaproperties",
+              "https://www.mimosaproperties.com/lagos-mimosaproperties"]:
         its,_ = scrape_playwright_html("Mimosa Properties", u,
                     "a[href*='/imovel/'], a[href*='/property/'], a[href*='/properties/']",
                     "Barlavento", p)
@@ -3244,9 +3247,12 @@ def scrape_boto(p):
     )
 
 def scrape_sunpoint(p):
-    # EGO: páginas por localidade têm listas maiores que os destaques
+    # EGO: os destaques do site são de luxo (>1M€). Aplica o teto na origem
+    # via query string suportada pela plataforma. Evidência 21/07: sem filtro
+    # os 12 cards vinham a 1M+ e o validar rejeitava tudo.
+    _pm = p.get("preco_max", 250000)
     res=[]; 
-    for u in ["https://www.sunpoint.pt/propriedades",
+    for u in [f"https://www.sunpoint.pt/propriedades?p_max={_pm}",
               "https://www.sunpoint.pt/lagos"]:
         its,_=scrape_playwright_html("Sunpoint Properties", u,
                                      "a[href*='/imovel/']", "Barlavento", p)
@@ -3312,12 +3318,11 @@ def scrape_qpsavills(p):
     return scrape_generico("QP Savills", urls, p)
 
 def scrape_jppproperties(p):
-    """JPP (Vilamoura/central): o URL antigo /buy?... devolvia 404.
-    Caminhos reais confirmados por pesquisa 20/07 (WordPress):
-    /en/properties_status/buy/ e /en/properties/."""
+    """JPP (Vilamoura): descobrir_sites 21/07 → /properties/ deu 21 raw / 20
+    válidos (185KB), e /en/properties_status/buy/ funciona também."""
     res=[]
-    for u in ["https://jppproperties.com/en/properties_status/buy/",
-              "https://jppproperties.com/en/properties/"]:
+    for u in ["https://jppproperties.com/properties/",
+              "https://jppproperties.com/en/properties_status/buy/"]:
         try:
             its = scrape_generico("JPP Properties", [u], p,
                                   seletores_extra=["article",".property-item",".listing-item"])
@@ -3360,12 +3365,35 @@ def scrape_algarvemanta(p):
 # ── SITES DESATIVADOS (falham consistentemente) ────────────
 # Timeout persistente — URLs provavelmente errados ou bloqueio total
 SCRAPERS_DESATIVADOS = {
-    # PROBATION 20/07: todos reactivados a pedido, com capacidades novas
-    # (scroll adaptativo p/ lazy-load, payloads JS, DIAG de hrefs).
-    # A ronda seguinte decide com evidência quem volta a esta lista.
-    # Histórico: Sunpoint/A.Unique/Mimosa/Vernon = Barlavento; Tripalgarve =
-    # zero âncoras; D'Alma/Barra Prime/Your Luxury = HTML vazio via chromium
-    # local ANTES do Browserless existir; Sotheby's/Villas Key = timeouts HTTP.
+    # Após ronda de prova 21/07 com todas as capacidades novas:
+    #
+    # Vernon Algarve, D'Alma Portuguesa
+    #   DIAG: "487 chars HTML | hrefs: [('mailto:help@moonshapes.pt', 1)]"
+    #   Ambos os sites estão OFFLINE — página só devolve email de contacto
+    #   do host (Moonshapes). Não é bloqueio; o negócio não tem site activo.
+    "Vernon Algarve",
+    "D'Alma Portuguesa",
+    #
+    # Barra Prime
+    #   DIAG: "4,426 chars | Classes: [] | hrefs: []"
+    #   Página completamente vazia (só header/footer). Site abandonado.
+    "Barra Prime",
+    #
+    # Your Luxury Property
+    #   DIAG: "2,046 chars | Classes: [] | hrefs: []"
+    #   Site off ou permanentemente bloqueado (mesmo via Browserless).
+    "Your Luxury Property",
+    #
+    # Tripalgarve
+    #   DIAG: "44KB | Padrões de href: []"
+    #   44KB de HTML renderizado com zero âncoras — SPA navega inteira por
+    #   onclick. Payload-regex também não bateu; sem forma de extrair URLs.
+    "Tripalgarve",
+    #
+    # Sotheby's, Villas Key
+    #   Timeouts crónicos, ainda por resolver.
+    "Sotheby's",
+    "Villas Key",
 }
 
 # NOTA: Garvetur, Dils Portugal, Sortami e Boto Properties estavam nesta lista
