@@ -205,10 +205,12 @@ SECRET_KEY         = os.getenv("SECRET_KEY", secrets.token_hex(32))
 
 PERFIS = [
     {
-        "nome":          "Sotavento — T2+ até 200k",
+        "nome":          "Sotavento — T2+",
         "email":         os.getenv("PERFIL_1_EMAIL", EMAIL_DESTINATARIO),
         "telegram_chat": os.getenv("PERFIL_1_TELEGRAM_CHAT", ""),
-        "preco_max":     int(os.getenv("PERFIL_1_PRECO_MAX",  "200000")),
+        # 5M por omissão = URLs de pesquisa dos sites devolvem o inventário
+        # inteiro; o filtro fino é feito na aplicação (slider do dashboard)
+        "preco_max":     int(os.getenv("PERFIL_1_PRECO_MAX",  "5000000")),
         "quartos_min":   int(os.getenv("PERFIL_1_QUARTOS_MIN", "2")),
         "tipos":         ["apartamentos", "moradias-e-vivendas"],
         "zonas":         ["faro", "tavira", "olhao",
@@ -2277,11 +2279,11 @@ def validar(item, perfil, _log_descarte=False):
     if any(x in link for x in ["/arrendar/","/arrendamento/","/alugar/","/rent/"]):
         return _rej("URL de arrendamento")
 
-    if pv and pv > perfil["preco_max"]:
-        return _rej(f"preço {pv:,}€ > máx {perfil['preco_max']:,}€")
-
-    if pv and pv < 10000:
-        return _rej(f"preço {pv}€ < 10k (renda?)")
+    # DECISÃO 22/07 (pedido do utilizador): o scraper NÃO filtra por preço.
+    # Recolhe TUDO e a aplicação filtra (slider já suporta "sem limite").
+    # Rendas continuam bloqueadas pelo ARRENDAMENTO_RE e pelos URLs /arrendar.
+    # perfil["preco_max"] continua a ser usado nos URLs de pesquisa dos sites
+    # como optimização, mas nunca para descartar um imóvel já extraído.
 
     return True
 
@@ -3350,6 +3352,86 @@ def scrape_mimosaproperties(p):
         "a[href*='/imovel/']", "Barlavento", p
     )
 
+def scrape_casasdobarlavento(p):
+    """Casas do Barlavento (Lagos) — adicionada 22/07 quando o utilizador
+    pediu recolha SEM filtro de valor (a app filtra). URLs candidatos;
+    o DIAG afina na 1ª ronda."""
+    return scrape_generico("Casas do Barlavento",
+        ["https://www.casasdobarlavento.pt/imoveis/",
+         "https://www.casasdobarlavento.pt/properties/"], p)
+
+def scrape_marcela(p):
+    """Marcela Properties (Barlavento histórico) — 22/07."""
+    return scrape_generico("Marcela Properties",
+        ["https://www.marcelaproperties.com/properties/",
+         "https://www.marcelaproperties.com/imoveis/"], p)
+
+def scrape_lagoshomes(p):
+    """Lagos Homes (Lagos/Praia da Luz) — 22/07."""
+    return scrape_generico("Lagos Homes",
+        ["https://www.lagoshomes.com/properties/",
+         "https://www.lagoshomes.com/for-sale/"], p)
+
+def scrape_mapro(p):
+    """Mapro Real Estate (Quinta do Lago/Vale do Lobo — luxo) — 22/07.
+    Entra agora que não há filtro de valor no scraper."""
+    return scrape_generico("Mapro Real Estate",
+        ["https://www.maprorealestate.com/properties/",
+         "https://www.maprorealestate.com/for-sale/"], p)
+
+def scrape_vipalgarve(p):
+    """VIP Algarve Property (Quarteira/Vilamoura) — 22/07."""
+    return scrape_generico("VIP Algarve",
+        ["https://www.vipalgarveproperty.com/properties/",
+         "https://www.vipalgarveproperty.com/imoveis/"], p)
+
+def scrape_landhouses(p):
+    """Land & Houses Algarve (= Yellow Homes, mesma empresa) — Tavira.
+
+    Verificado por pesquisa 22/07: site ASP.NET clássico (server-rendered),
+    detalhes em /<slug>-<id>.aspx, listagens por concelho:
+    /Eastern_Algarve/<Localidade>/All_Property_Types/price-0.aspx
+    100% Sotavento (Eastern Algarve). NOTA: yellowhomes.com é a outra marca
+    da mesma agência — um scraper cobre as duas; não adicionar em separado."""
+    urls = [
+        "https://www.landandhousesalgarve.com/Eastern_Algarve/Tavira/All_Property_Types/price-0.aspx",
+        "https://www.landandhousesalgarve.com/Eastern_Algarve/Cabanas_de_Tavira/All_Property_Types/price-0.aspx",
+    ]
+    return scrape_generico("Land & Houses Algarve", urls, p,
+                           seletores_extra=["a[href*='.aspx']"])
+
+def scrape_togofor(p):
+    """Togofor-Homes (AMI 6902, desde 2005) — escritórios em Vilamoura, Lagos
+    e TAVIRA. Verificado por pesquisa 22/07; listagens em /en/...-for-sale/."""
+    urls = [
+        "https://www.togofor-homes.com/en/Tavira-villas-for-sale/",
+        "https://www.togofor-homes.com/en/Properties-for-sale-in-the-Algarve-Portugal/",
+    ]
+    return scrape_generico("Togofor-Homes", urls, p)
+
+def scrape_janela(p):
+    """Janela Imobiliária (Faro) — 230+ imóveis, Sotavento.
+
+    Plataforma eGO Real Estate — os mesmos seletores da Sunpoint/A.Unique/Mimosa
+    funcionam aqui (a[href*='/imovel/']). URL de listagem confirmado por
+    pesquisa web 22/07: /imoveis/venda/.
+
+    NOTA: NÃO confundir com janelagrande.com (outra empresa, Alentejo, AMI
+    12740). Esta é a Janela Algarvia (AMI 6110), sede em Faro."""
+    res = []
+    for u in ["https://www.janela-imobiliaria.com/imoveis/venda/",
+              "https://www.janela-imobiliaria.com/comprarcasa"]:
+        try:
+            its,_ = scrape_playwright_html(
+                "Janela Imobiliária", u,
+                "a[href*='/imovel/'], a[href*='/imoveis/']",
+                "Faro", p)
+            res.extend(its)
+            if len(res) >= 5: break
+        except Exception as e:
+            log.error(f"  Janela Imobiliária: {e}")
+    return res, 1
+
 def scrape_sortami(p):
     return scrape_playwright_html(
         "Sortami",
@@ -3505,6 +3587,14 @@ SCRAPERS=[
     # ── ALGARVE REGIÃO (Playwright) ──────────────────────
     ("Garvetur",scrape_garvetur),            # ✅ Playwright (garveturproperties.com)
     ("Algarve Unique Properties",scrape_algarveuniqueproperties), # ✅ Playwright
+    ("Janela Imobiliária",scrape_janela),   # ✅ eGO — Faro (adicionado 22/07)
+    ("Land & Houses Algarve",scrape_landhouses),  # ✅ ASP.NET — Tavira/Sotavento (22/07)
+    ("Casas do Barlavento",scrape_casasdobarlavento),  # 22/07 sem filtro de valor
+    ("Marcela Properties",scrape_marcela),   # 22/07
+    ("Lagos Homes",scrape_lagoshomes),       # 22/07
+    ("Mapro Real Estate",scrape_mapro),      # 22/07 luxo QDL
+    ("VIP Algarve",scrape_vipalgarve),       # 22/07
+    ("Togofor-Homes",scrape_togofor),        # ✅ HTTP — Tavira/Vilamoura (22/07)
     ("Sortami",scrape_sortami),              # ✅ Playwright
     ("D'Alma Portuguesa",scrape_dalmaportuguesa), # ✅ Playwright
     # ── TRIÂNGULO DOURADO (✅/🔧 corrigidos) ────────────
@@ -3697,6 +3787,7 @@ def verificar_perfil(perfil):
     _PW_NOMES = {
         "Boto Properties","Sunpoint Properties","Algarve Unique Properties",
         "Garvetur","Barra Prime","Mimosa Properties","Sortami","Vernon Algarve",
+        "Janela Imobiliária",
         "Algarve Dream Property","Your Luxury Property","Dils Portugal",
         "D'Alma Portuguesa","Sotheby's",
         "KW Portugal","LNHouse",   # SPAs — reescritos para Playwright em 17/07
