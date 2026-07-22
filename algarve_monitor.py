@@ -1142,6 +1142,8 @@ def init_db():
             """)
         conn.commit()
     log.info("Base de dados v4 inicializada.")
+    try: migrar_precos_colados()
+    except Exception as e: log.warning(f"migração de preços saltada: {e}")
 
 def _load_broken_scrapers():
     """Carrega scrapers marcados como broken da BD."""
@@ -1536,6 +1538,32 @@ def marcar_removidos(ids_vistos, perfil_nome, total_encontrados=0, fontes_ok=Non
     if saltados_fonte_falhada:
         log.info(f"  marcar_removidos: {saltados_fonte_falhada} imóveis poupados (fonte falhou a ronda)")
     return removidos
+
+def migrar_precos_colados():
+    """Aplica _preco_bonito aos preços já guardados na BD.
+    Corre uma vez ao arranque; imóveis novos são normalizados no fazer_item.
+    Alvo: 'comprar85.000 €89.000 €' → '85.000 €'."""
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id, preco FROM imoveis
+                    WHERE preco LIKE 'comprar%' OR preco ~ '€.*€'
+                """)
+                mudou = 0; total = 0
+                updates = []
+                for row in cur.fetchall():
+                    total += 1
+                    novo = _preco_bonito(row[1])
+                    if novo != row[1]:
+                        updates.append((novo, row[0]))
+                        mudou += 1
+                if updates:
+                    cur.executemany("UPDATE imoveis SET preco=%s WHERE id=%s", updates)
+                    conn.commit()
+                log.info(f"  ✨ Migração de preços: {mudou}/{total} normalizados")
+    except Exception as e:
+        log.warning(f"migrar_precos_colados: {e}")
 
 def marcar_reativado(imovel_id):
     with get_db() as conn:
@@ -3607,11 +3635,18 @@ def enviar_resumo_semanal():
 # LOOP PRINCIPAL
 # ============================================================
 
+# Set global das fontes que correram sem excepção nesta ronda — usado por
+# marcar_removidos para NÃO remover inventário de fontes que crasharam.
+# Uma fonte que corre e devolve 0 items com sucesso É válida (n_raw>0 ou n_raw==0
+# sem erro): pode ser um dia calmo. Só se excluem as que rebentaram.
+_scraper_ok_lock = threading.Lock()
+_scrapers_correram_ok = set()
+
 def correr_scraper(args):
     """Corre um scraper individual — usado em paralelo."""
     nome, fn, perfil = args
     log.info(f"  → {nome}...")
-    erros = ""; total = 0; pags = 1
+    erros = ""; total = 0; pags = 1; excepcao = False
     t0 = time.time()
     try:
         r = fn(perfil)
@@ -3628,11 +3663,14 @@ def correr_scraper(args):
             log.info(f"    ✅ {nome}: {total} resultados ({tempo}ms)")
     except Exception as e:
         erros = str(e)
+        excepcao = True
         tempo = round((time.time()-t0)*1000)
         log.error(f"    ❌ {nome}: {e} ({tempo}ms)")
         anuncios = []
+    if not excepcao:
+        with _scraper_ok_lock:
+            _scrapers_correram_ok.add(nome)
     registar_log_scraper(nome, perfil["nome"], total, 0, pags, erros, tempo)
-    # Actualiza scraper_stats (usa função com schema correcto)
     try:
         _update_scraper_stat(nome, total)
     except Exception: pass
@@ -3761,7 +3799,15 @@ def verificar_perfil(perfil):
             if disp_ant==False:
                 marcar_reativado(item["id"]); reativados.append(item)
 
-    _fontes_ok = {t.get("fonte") for t in todos if t.get("fonte")}
+    # Fontes que CORRERAM (mesmo com 0 items). Um site com nav só (0 items)
+    # ainda existe — não é razão para marcar o inventário histórico como
+    # removido. Só quando a fonte rebenta é que o inventário é poupado.
+    # Uniao com fontes que devolveram items: se algo devolveu items mas a
+    # thread rebentou depois, o inventário fica poupado na mesma.
+    _fontes_com_items = {t.get("fonte") for t in todos if t.get("fonte")}
+    with _scraper_ok_lock:
+        _fontes_correram = set(_scrapers_correram_ok)
+    _fontes_ok = _fontes_com_items | _fontes_correram
     removidos=marcar_removidos(ids_ronda,perfil["nome"],total_encontrados=len(todos),
                                fontes_ok=_fontes_ok)
     atualizar_snapshot_mercado(perfil["nome"])
@@ -3847,7 +3893,8 @@ def verificar():
     log.info(f"Verificação: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
     log.info("="*55)
     _load_provider_state()  # restaura providers esgotados após restart
-    # Força sincronização do estado para todos os threads
+    with _scraper_ok_lock:
+        _scrapers_correram_ok.clear()  # ronda nova = estado limpo
     log.info(f"  Providers excluídos desta sessão: {sorted(_session_exhausted)}")
 
     # Verifica créditos — só para se ScraperAPI esgotado E sem outros proxies
