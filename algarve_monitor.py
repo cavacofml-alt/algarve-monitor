@@ -1639,7 +1639,7 @@ def atualizar_snapshot_mercado(perfil_nome):
                 """, (zona,perfil_nome,pm,total))
         conn.commit()
 
-def get_imoveis(perfil_nome=None, limite=300):
+def get_imoveis(perfil_nome=None, limite=3000):
     with get_db() as conn:
         with conn.cursor(row_factory=psycopg_rows.dict_row) as cur:
             q = "SELECT * FROM imoveis"
@@ -2113,6 +2113,14 @@ MAX_PAGINAS = 2  # max 2 páginas por zona
 # Muitos sites devolvem breadcrumbs ("Faro>Faro>Faro"), contadores
 # ("Imóveis encontrados:4835") ou placeholders ("Não Aplicável") no lugar do
 # título. Como o URL do anúncio traz um slug descritivo, derivamos daí.
+# Textos de botão/CTA que aparecem como título de card em vários sites.
+# Não são títulos: deixar vazio para _melhor_titulo reparar pelo slug do URL.
+_CTA_NAO_E_TITULO = {
+    "open","ver","view","details","detalhes","saber mais","read more","more",
+    "ver mais","see more","usado","novo","reservado","vendido","sold","new",
+    "used","em construção","clique aqui","click here",
+}
+
 _TITULOS_A_REPARAR = re.compile(
     r"^(n[ãa]o\s+aplic[áa]vel|sem\s+t[íi]tulo|s/\s*t[íi]tulo)$"
     r"|im[óo]veis\s+encontrados"
@@ -2133,6 +2141,9 @@ def _titulo_do_slug(url):
     return (t[:1].upper() + t[1:])[:120]
 
 def _melhor_titulo(titulo, link):
+    # CTA de botão ("Open", "Ver", "Details") não é título — repara pelo slug
+    if titulo and titulo.strip().lower() in _CTA_NAO_E_TITULO:
+        titulo = ""
     """Se o título for lixo/genérico, tenta reconstruí-lo a partir do URL."""
     t = (titulo or "").strip()
     # Também repara títulos que são o nome da agência ("KW Portugal", "LNHouse"):
@@ -3314,10 +3325,10 @@ def scrape_sunpoint(p):
     # paginada). Testar ambos os slugs prováveis; o validar filtra por preço.
     # Não uso query-params de preço porque não confirmei o schema da EGO
     # (?p_max e ?vmax podem ser ignorados pela plataforma).
+    # 22/07: os slugs /imoveis-sunpoint* devolvem 4.426 chars (404 do eGO) e
+    # custavam ~20s/ronda. Só /propriedades funciona (342KB, 12 cards).
     res=[]
-    for u in ["https://www.sunpoint.pt/imoveis-sunpoint",
-              "https://www.sunpoint.pt/imoveis-sunpointproperties",
-              "https://www.sunpoint.pt/propriedades"]:
+    for u in ["https://www.sunpoint.pt/propriedades"]:
         its,_=scrape_playwright_html("Sunpoint Properties", u,
                                      "a[href*='/imovel/']", "Barlavento", p)
         res.extend(its)
@@ -3401,13 +3412,25 @@ def scrape_landhouses(p):
                            seletores_extra=["a[href*='.aspx']"])
 
 def scrape_togofor(p):
-    """Togofor-Homes (AMI 6902, desde 2005) — escritórios em Vilamoura, Lagos
-    e TAVIRA. Verificado por pesquisa 22/07; listagens em /en/...-for-sale/."""
-    urls = [
-        "https://www.togofor-homes.com/en/Tavira-villas-for-sale/",
-        "https://www.togofor-homes.com/en/Properties-for-sale-in-the-Algarve-Portugal/",
-    ]
-    return scrape_generico("Togofor-Homes", urls, p)
+    """Togofor-Homes (AMI 6902) — Vilamoura, Lagos e TAVIRA.
+
+    22/07: a página devolve 828KB (conteúdo real) mas os cards usam <a>Open</a>
+    como CTA — o título é o texto do botão, não do imóvel. Todos os itens eram
+    descartados por 'título genérico: open'. Passa a Playwright com seletor de
+    âncora de imóvel; o título vem do slug do URL via _melhor_titulo."""
+    res = []
+    for u in ["https://www.togofor-homes.com/en/Properties-for-sale-in-the-Algarve-Portugal/",
+              "https://www.togofor-homes.com/en/Tavira-villas-for-sale/"]:
+        try:
+            its,_ = scrape_playwright_html(
+                "Togofor-Homes", u,
+                "a[href*='/en/property/'], a[href*='/property/'], a[href*='-for-sale/']",
+                "Algarve", p)
+            res.extend(its)
+            if len(res) >= 5: break
+        except Exception as e:
+            log.error(f"  Togofor-Homes: {e}")
+    return res, 1
 
 def scrape_janela(p):
     """Janela Imobiliária (Faro) — 230+ imóveis, Sotavento.
@@ -3418,8 +3441,10 @@ def scrape_janela(p):
 
     NOTA: NÃO confundir com janelagrande.com (outra empresa, Alentejo, AMI
     12740). Esta é a Janela Algarvia (AMI 6110), sede em Faro."""
+    # DIAG 22/07: /imoveis/venda/ devolve 4.426 chars (página de erro do eGO);
+    # os hrefs reais da home são 'casasvenda' (12×) e 'comprarcasa' (7×).
     res = []
-    for u in ["https://www.janela-imobiliaria.com/imoveis/venda/",
+    for u in ["https://www.janela-imobiliaria.com/casasvenda",
               "https://www.janela-imobiliaria.com/comprarcasa"]:
         try:
             its,_ = scrape_playwright_html(
@@ -4869,21 +4894,48 @@ if __name__=="__main__":
     log.info(f"Login configurado: {DASHBOARD_USERNAME} (password definida)")
     log.info(f"{len(SCRAPERS)} fontes | {len(PERFIS)} perfil(is) | cada {INTERVALO_HORAS}h")
     def run_server():
+        """Arranca o gunicorn; se ele morrer, cai para o servidor Flask.
+
+        BUG corrigido 23/07: o try/except só apanhava falhas do Popen() em si.
+        Se o gunicorn arrancasse e morresse logo a seguir (import lento, OOM,
+        porta ocupada, gunicorn em falta), morria em SILÊNCIO e o fallback
+        nunca corria — ficava tudo sem servidor e o dashboard dava 404 em
+        /api/*. Agora confirma-se que o processo sobreviveu antes de assumir
+        que está bom, e loga-se o stderr dele em caso de morte."""
+        import subprocess, sys
+        proc = None
         try:
-            # Use gunicorn in production if available
-            import subprocess, sys
             cmd = [sys.executable, "-m", "gunicorn",
                    f"--bind=0.0.0.0:{PORT}",
                    "--workers=1", "--threads=4",
                    "--worker-class=gthread",
                    "--timeout=120",
                    "algarve_monitor:app"]
-            _gunicorn_proc = subprocess.Popen(cmd)
-            log.info(f"Dashboard (gunicorn) em http://localhost:{PORT} (pid={_gunicorn_proc.pid})")
-        except Exception:
-            # Fallback to Flask dev server
-            app.run(host="0.0.0.0", port=PORT, use_reloader=False)
-            log.info(f"Dashboard (flask) em http://localhost:{PORT}")
+            proc = subprocess.Popen(cmd, stderr=subprocess.PIPE)
+            # Dá-lhe tempo para importar o módulo e ligar-se à porta
+            for _ in range(20):          # até 10s
+                time.sleep(0.5)
+                if proc.poll() is not None:
+                    break
+            if proc.poll() is None:
+                log.info(f"Dashboard (gunicorn) em http://localhost:{PORT} (pid={proc.pid})")
+                return               # gunicorn vivo — trabalho feito
+            # Morreu: mostrar porquê antes de cair para o Flask
+            try:
+                _err = (proc.stderr.read() or b"").decode("utf-8", "ignore")[-1500:]
+            except Exception:
+                _err = "(stderr indisponível)"
+            log.error(f"gunicorn morreu (código {proc.returncode}). stderr:\n{_err}")
+        except Exception as e:
+            log.error(f"gunicorn não arrancou: {e}")
+            if proc is not None:
+                try: proc.kill()
+                except Exception: pass
+        log.warning("A usar o servidor Flask como alternativa.")
+        try:
+            app.run(host="0.0.0.0", port=PORT, use_reloader=False, threaded=True)
+        except Exception as e:
+            log.error(f"servidor Flask também falhou: {e}")
     threading.Thread(target=run_server, daemon=True).start()
     log.info(f"Dashboard em http://localhost:{PORT}")
     verificar()

@@ -269,9 +269,9 @@
     <div class="price-slider-wrap">
       <label>
         <span>💰 Preço</span>
-        <span id="slider-label">até <b id="slider-val">250k€</b></span>
+        <span id="slider-label">até <b id="slider-val">sem limite</b></span>
       </label>
-      <input type="range" id="fpreco" min="0" max="500000" step="5000" value="500000"
+      <input type="range" id="fpreco" min="0" max="5000000" step="25000" value="5000000"
              oninput="updateSlider(this.value);filtrar()">
     </div>
     <button onclick="toggleGrupos()" id="btn-grupos"
@@ -949,10 +949,13 @@ async function apagarImovel(id, btn){
 }
 
 // ── SLIDER DE PREÇO ─────────────────────────────────────
-let precoMax = 500000;
+let precoMax = 5000000;
 function updateSlider(val){
   precoMax = parseInt(val);
-  const label = val>=500000 ? 'sem limite' : (val/1000).toFixed(0)+'k€';
+  const n = parseInt(val);
+  const label = n>=5000000 ? 'sem limite'
+              : n>=1000000 ? (n/1000000).toFixed(1).replace('.0','')+'M€'
+              : (n/1000).toFixed(0)+'k€';
   document.getElementById('slider-val').textContent = label;
 }
 
@@ -1071,7 +1074,7 @@ filtrar = function(){
     if(txt&&!(i.titulo||'').toLowerCase().includes(txt)) return false;
     if(zona&&i.zona!==zona) return false;
     if(fonte&&i.fonte!==fonte) return false;
-    if(precoLimite<500000 && i.preco_valor && i.preco_valor>precoLimite) return false;
+    if(precoLimite<5000000 && i.preco_valor && i.preco_valor>precoLimite) return false;
     if(est==='favorito'&&!i.favorito) return false;
     if(est==='removido'&&i.disponivel) return false;
     if(['visitar','visitado','rejeitado'].includes(est)&&i.estado!==est) return false;
