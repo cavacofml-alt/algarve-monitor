@@ -1,0 +1,1671 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MSGCHECK — Validador PNL/ADL (IATA)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#E9EDF1; --panel:#FFFFFF; --ink:#16232E; --muted:#5C6B77;
+  --blue:#14508C; --blue-soft:#E3ECF5;
+  --red:#B3261E; --red-soft:#F9E4E2;
+  --amber:#9A6B00; --amber-soft:#F7EED8;
+  --green:#1E7A4C; --green-soft:#E1F0E8;
+  --telex-bg:#0F1E2A; --telex-ink:#D7E3EC; --telex-dim:#54697A; --telex-rule:#22394B;
+  --radius:10px; --border:#D4DBE1;
+}
+*{box-sizing:border-box; margin:0; padding:0;}
+body{background:var(--bg); color:var(--ink); font-family:'Archivo',system-ui,sans-serif; line-height:1.45;}
+a{color:var(--blue);}
+.wrap{max-width:1180px; margin:0 auto; padding:28px 20px 64px;}
+
+header.top{display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; margin-bottom:6px;}
+.brand{font-weight:800; font-size:26px; letter-spacing:.02em;}
+.brand .tag{color:var(--blue);}
+.sub{color:var(--muted); font-size:14px;}
+.refline{font-family:'IBM Plex Mono',monospace; font-size:11.5px; color:var(--muted); margin-bottom:22px; letter-spacing:.02em;}
+
+.grid{display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:20px;}
+@media(max-width:960px){.grid{grid-template-columns:1fr;}}
+
+.card{background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); overflow:hidden;}
+.card h2{font-size:13px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--muted);
+  padding:12px 16px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:8px;}
+.card h2 .dot{width:8px;height:8px;border-radius:50%;background:var(--blue);display:inline-block;}
+
+textarea{width:100%; min-height:340px; border:0; resize:vertical; padding:14px 16px;
+  font-family:'IBM Plex Mono',monospace; font-size:13px; line-height:1.55; color:var(--ink);
+  background:#FBFCFD; outline:none; white-space:pre; overflow-x:auto;}
+textarea:focus{background:#F5F8FB;}
+
+.controls{display:flex; gap:10px; padding:12px 16px; border-top:1px solid var(--border); flex-wrap:wrap; align-items:center;}
+button{font-family:'Archivo',sans-serif; font-weight:600; font-size:13.5px; border-radius:8px; cursor:pointer;
+  padding:9px 16px; border:1px solid transparent; transition:filter .12s;}
+button:hover{filter:brightness(1.06);}
+button:focus-visible{outline:2px solid var(--blue); outline-offset:2px;}
+.btn-primary{background:var(--blue); color:#fff;}
+.btn-ghost{background:transparent; color:var(--blue); border-color:var(--blue);}
+.btn-quiet{background:transparent; color:var(--muted); border-color:var(--border);}
+
+.summary{display:flex; gap:10px; flex-wrap:wrap; padding:12px 16px; border-bottom:1px solid var(--border);}
+.chip{font-size:12.5px; font-weight:700; padding:5px 12px; border-radius:999px; display:inline-flex; gap:6px; align-items:center;}
+.chip.err{background:var(--red-soft); color:var(--red);}
+.chip.warn{background:var(--amber-soft); color:var(--amber);}
+.chip.info{background:var(--blue-soft); color:var(--blue);}
+.chip.ok{background:var(--green-soft); color:var(--green);}
+
+/* ------- telex pane (assinatura) ------- */
+.telex{background:var(--telex-bg); color:var(--telex-ink); font-family:'IBM Plex Mono',monospace;
+  font-size:12.5px; line-height:1.7; overflow-x:auto; position:relative; padding:10px 0 16px;}
+.telex .ruler{color:var(--telex-dim); font-size:10px; padding:0 12px 6px 58px; white-space:pre; user-select:none;
+  border-bottom:1px solid var(--telex-rule); margin-bottom:6px;}
+.tl{display:flex; white-space:pre; position:relative;}
+.tl:hover{background:rgba(255,255,255,.03);}
+.tl .ln{width:46px; flex:0 0 46px; text-align:right; padding-right:12px; color:var(--telex-dim); user-select:none; font-size:11px;}
+.tl .content{position:relative; padding-right:16px;}
+.tl .content .col64{position:absolute; left:calc(64ch); top:0; bottom:0; border-left:1px dashed var(--telex-rule); opacity:.8;}
+span.mark{border-bottom:2px solid; border-radius:1px; cursor:help; position:relative;}
+span.mark.err{border-color:#FF6B5E; background:rgba(255,107,94,.16);}
+span.mark.warn{border-color:#F2B62B; background:rgba(242,182,43,.14);}
+span.mark.info{border-color:#5EA8FF; background:rgba(94,168,255,.13);}
+.tl.line-err .ln{color:#FF8A80;}
+.tl.line-warn .ln{color:#F2C864;}
+
+/* ------- findings ------- */
+.findings{max-height:520px; overflow-y:auto;}
+.finding{display:grid; grid-template-columns:70px 1fr; gap:4px 12px; padding:11px 16px; border-bottom:1px solid var(--border); font-size:13.5px;}
+.finding:last-child{border-bottom:0;}
+.finding .loc{font-family:'IBM Plex Mono',monospace; font-size:12px; font-weight:600; padding-top:1px; cursor:pointer;}
+.finding.err .loc{color:var(--red);}
+.finding.warn .loc{color:var(--amber);}
+.finding.info .loc{color:var(--blue);}
+.finding .msg b{font-weight:700;}
+.finding .ref{grid-column:2; font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--muted); letter-spacing:.02em;}
+.empty{padding:26px 16px; color:var(--muted); font-size:14px; text-align:center;}
+.allok{padding:26px 16px; text-align:center; color:var(--green); font-weight:700; font-size:15px;}
+
+footer{margin-top:34px; color:var(--muted); font-size:12px; line-height:1.6;}
+footer code{font-family:'IBM Plex Mono',monospace; font-size:11px;}
+@media (prefers-reduced-motion: reduce){ *{transition:none !important;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">MSG<span class="tag">CHECK</span></div>
+    <div class="sub">Validador de mensagens IATA — PNL·ADL·PSM·PTM·PFS·PIL·SOM·SPM·FTL·PRL·ETL·MVT·DIV·SSM·ASM</div>
+  </header>
+  <div class="refline">FONTES: PSCRM 30ª ED. (RP 1707b·1708·1711·1712·1715·1716·1718·1719·1719a/b/c) · AIRIMP 34ª ED. · AHM 780/730 · SSIM (VIA AVINOR)</div>
+
+  <div class="grid">
+    <section class="card">
+      <h2><span class="dot"></span>Mensagem de entrada</h2>
+      <textarea id="input" spellcheck="false" autocapitalize="off" autocomplete="off"
+        placeholder="Cola aqui a mensagem (PNL, ADL, PSM, MVT, SSM…) — o tipo é detetado automaticamente.&#10;&#10;LISKPTP AMSKLKL&#10;.FAORMTP 151420&#10;PNL&#10;TP1234/16JUL LIS PART1&#10;…"></textarea>
+      <div class="controls">
+        <button class="btn-primary" id="btnValidate">Validar mensagem</button>
+        <span style="display:inline-flex;align-items:center;border:1px solid var(--blue);border-radius:8px;overflow:hidden;">
+          <button class="btn-ghost" id="btnExample" style="border:0;border-radius:0;">Carregar exemplo</button>
+          <select id="msgtype" title="Tipo de mensagem do exemplo (apenas para o exemplo — a validação deteta o tipo automaticamente)" style="font-family:'Archivo',sans-serif;padding:9px 8px;border:0;border-left:1px solid var(--blue);background:var(--blue-soft);color:var(--blue);font-size:13px;font-weight:700;cursor:pointer;">
+          <option value="PNL">PNL</option>
+          <option value="PSM">PSM</option>
+          <option value="PTM">PTM</option>
+          <option value="PFS">PFS</option>
+          <option value="PIL">PIL</option>
+          <option value="SOM">SOM</option>
+          <option value="SPM">SPM</option>
+          <option value="FTL">FTL</option>
+          <option value="PRL">PRL</option>
+          <option value="ETL">ETL</option>
+          <option value="MVT">MVT</option>
+          <option value="DIV">DIV</option>
+          <option value="SSM">SSM</option>
+          <option value="ASM">ASM</option>
+        </select>
+        </span>
+        <button class="btn-ghost" id="btnExampleBad">Exemplo com erros</button>
+        <button class="btn-quiet" id="btnClear">Limpar</button>
+        <span style="flex-basis:100%;font-size:12px;color:var(--muted);">O tipo de mensagem é detetado automaticamente ao validar — o seletor escolhe apenas o exemplo a carregar.</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><span class="dot"></span>Resultado da validação</h2>
+      <div class="summary" id="summary" hidden></div>
+      <div class="findings" id="findings"><div class="empty">Cola uma mensagem e carrega em <b>Validar</b>. Os erros aparecem aqui com referência à regra do manual.</div></div>
+    </section>
+  </div>
+
+  <section class="card" style="margin-top:20px;">
+    <h2><span class="dot"></span>Impressão telex — erros assinalados carácter a carácter</h2>
+    <div class="telex" id="telex"><div class="empty" style="color:var(--telex-dim)">A mensagem validada é impressa aqui, com régua de 64 colunas e sublinhados nos caracteres exatos com problemas.</div></div>
+  </section>
+
+  <footer>
+    Motor de regras derivado dos manuais fornecidos: <code>PSCRM 30ª Edição (RP 1708 — PNL/ADL; RP 1707b — Data Element Dictionary)</code> e
+    <code>AIRIMP 34ª Edição (matriz SSR §2.11.6.7)</code>. As regras estão reformuladas como lógica de validação; nenhuma parte dos manuais é reproduzida.
+    Severidades: <b>ERR</b> viola o standard · <b>AVISO</b> possível problema / sujeito a acordo bilateral · <b>INFO</b> nota de boas práticas.
+  </footer>
+</div>
+
+<script>
+/* =====================================================================
+   REGRAS (derivadas de: PSCRM RP1708 + RP1707b · AIRIMP §2.11.6.7)
+   ===================================================================== */
+const RULES = {
+  maxLine: 64, // RP1707b Sec.2 Nota 3
+  months: ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"],
+  // Matriz SSR — AIRIMP 34ª ed. §2.11.6.7
+  // União: RP1708 §2.12.7 (Table of SSR Codes) + AIRIMP 34ª ed. §2.11.6.7 (Matriz SSR) + extensões locais (CHKD)
+  pnlCodes: new Set(["ADTK","AOXY","ASVC","ASVX","AUTK","AVIH","AVML","BBML","BIKE","BLML","BLND","BSCT","BULK","CBBG","CHLD","CHML","CKIN","CLID","COUR","CRUZ","DBML","DCRW","DEAF","DEPA","DEPU","DOCA","DOCO","DOCS","DPNA","EPAY","ETLP","EXST","FOID","FPML","FQTR","FQTS","FQTU","FQTV","FRAG","FRAV","GFML","GPST","GRPF","GRPK","GRPS","HNML","INFT","IROP","KSML","LANG","LCML","LFML","LSML","MAAS","MCOA","MEDA","MEQT","MOML","NAME","NLML","NOML","NRSB","NSSA","NSSB","NSSR","NSST","NSSW","OTHS","PCTC","PETC","POXY","PPOC","RLOC","RQST","RVML","SEAT","SEMN","SFML","SLPR","SMSA","SMSB","SMSR","SMST","SMSW","SPEQ","SPML","STCR","TKNA","TKNC","TKNE","TKNM","TKNR","TKNX","TKTL","TLAC","TWOV","UMNR","VGML","VJML","VLML","VOML","WCBD","WCBW","WCHC","WCHR","WCHS","WCMP","WCOB","WEAP","XBAG","SVC","CHKD"]),
+  // RP1708 §2.12.8 — OSI/AUX admitidos em .R/ (contagem opcional antes do código, ex.: 2VIP)
+  psmCodes: new Set(["ASVC","BLND","DEAF","DEPA","DEPU","DPNA","EMIG","INAD","LANG","MAAS","MEDA","PPOC","STCR","SVC","TWOV","UMNR","VIP","WCHC","WCHR","WCHS","WEAP"]),
+  statusRequired: new Set(["CHKD"]), // extensões locais: status+contagem obrigatórios
+  osiCodes: new Set(["DIPL","EMIG","ETLP","INAD","LEGL","LEGR","LEGB","OXYG","SVC","TKNO","VIP","CHD"]),
+  statusCodes: new Set(["HK","KK","NN","UN","NO","XX","HN","TK","PN","UC","US","HX","SA","GK","KL","TL"]),
+  // Elementos .X/ definidos (RP1707b Sec.3); NOT IN USE: A,B,E,G,H,J,K,P,Q
+  dotElements: new Set([".BG",".C",".D",".DBC",".DG1",".DG2",".F",".I",".ID1",".ID2",".L",".M",".N",".O",".R",".RN",".RG1",".RG2",".S",".SN",".W",".WL"]),
+  dotNotInUse: new Set([".A",".B",".E",".G",".H",".J",".K",".P",".Q",".U",".V",".X",".Y",".Z"]), // RP1707b Sec.3 (NOT IN USE)
+  categories: new Set(["CFMWL","FQTVN","NOSHO","OFFLK","OFFLN","NOREC","GOSHN","GOSHO","CHGCL","INVOL","CHGSG","CHGFL","IDPAD","APIPX","OFLD","REGRET"]),
+  titles: ["MRS","MSTR","MISS","MR","MS","DR","PROF","CHD","INF","REV","SIR","LADY","CAPT"],
+  charset: /[^A-Z0-9 .\/\-=()?:,+']/g // conjunto telex admitido
+};
+
+const REF = {
+  len:"RP 1707b Sec.2 Nota 3 (limite 64 car./linha)",
+  addr:"RP 1708 §2.1 / RP 1707b §2.1 (Address Element)",
+  comms:"RP 1708 §2.2 / RP 1707b §2.2 (Communications Reference)",
+  msgid:"RP 1707b §2.3 (Message Identifier)",
+  flight:"RP 1708 §2.4 / RP 1707b §2.4 (Flight Element)",
+  totals:"RP 1708 §2.5 / RP 1707b §2.5 (Totals by Destination)",
+  name:"RP 1707b §2.9 (Name Element) · AIRIMP §2.11.6.1",
+  group:"RP 1707b §2.9.2 (Party/Group Identification)",
+  remarks:"RP 1707b §3.24 (.R/ Remarks Element)",
+  rn:"RP 1707b §3.24.8–3.27 (.RN/ continuação)",
+  ssr:"AIRIMP §2.11.6.7 (Matriz de códigos SSR)",
+  status:"AIRIMP §2.11.6 (Action/Status/Advice Codes)",
+  elem:"RP 1707b Sec.3 (Data Elements .X/)",
+  end:"RP 1707b §3.1 (End Element) / RP 1708",
+  adl:"RP 1707b §2.7 (DEL/ADD/CHG — só em ADL)",
+  rbd:"RP 1707b §2.10 (Class Codes Element RBD)",
+  cfg:"RP 1707b §2.12 (Seat Configuration CFG)",
+  mvt:"AHM 780 (Aircraft Movement Message) / AHM 730 (DIV)",
+  ssim:"SSIM cap. 2 (SSM/ASM) — via Avinor xwiki",
+  charset:"SCR Manual / telex — conjunto de caracteres admitido",
+  space:"Formato telex — espaçamento significativo",
+  alpha:"RP 1707b §2.9 (nomes alfabetizados por apelido)"
+};
+
+/* ============================ VALIDADOR ============================ */
+function validate(raw){
+  const findings = [];
+  const add=(line,col,len,sev,msg,ref,meta)=>findings.push(Object.assign({line,col,len,sev,msg,ref},meta||{}));
+  const lines = raw.replace(/\r\n/g,"\n").replace(/\r/g,"\n").split("\n");
+
+  // localizar blocos de mensagem: cada bloco começa numa linha PNL/ADL isolada.
+  // Tudo o que estiver fora de um bloco (endereços, referência do emissor,
+  // trailers = / NNNN / ZCZC) é ignorado sem validação.
+  const idRe=/^(PNL|ADL|PSM|PTM|PFS|PIL|SOM|SPM|FTL|PRL|ETL|MVT|DIV|SSM|ASM|PASSENGER INFORMATION LIST)\s*$/i;
+  const blocks=[];
+  lines.forEach((l,i)=>{ if(idRe.test(l.trim())) blocks.push({start:i}); });
+  if(blocks.length===0){
+    add(1,1,Math.max((lines[0]||"").length,1),"err","Não foi encontrado o identificador de mensagem <b>PNL</b> ou <b>ADL</b> (isolado numa linha).",REF.msgid);
+    return findings;
+  }
+  blocks.forEach((b,k)=>{ b.limit = (k+1<blocks.length ? blocks[k+1].start : lines.length); });
+  const fltKey=l=>{ const m=(l||"").toUpperCase().trim().match(/^([A-Z0-9]{2}[A-Z]?\d{1,4}[A-Z]?)\/(\d{2})([A-Z]{3})/); return m?m[1]+"/"+m[2]+m[3]:null; };
+  blocks.forEach(b=>{ b.key=fltKey(lines[b.start+1]); });
+  blocks.forEach(b=>{ const t=(lines[b.start]||'').trim().toUpperCase(); b.type=(t==='PASSENGER INFORMATION LIST')?'PIL':t; });
+  // um único voo por validação (PNL/ADL): partes do MESMO voo podem vir juntas; voos diferentes não
+  // um único voo por validação; ADLs múltiplos do mesmo voo são legítimos, PNLs múltiplos não
+  const pnls=blocks.filter(b=>b.type==='PNL' && b.key);
+  const pnladl=blocks.filter(b=>(b.type==='PNL'||b.type==='ADL') && b.key);
+  if(pnls.length>1)
+    add(pnls[1].start+1,1,(lines[pnls[1].start]||'').length||1,"warn","Vários PNLs colados — para o mesmo voo, apenas as partes de um PNL devem ser validadas em conjunto.",REF.flight);
+  if(pnladl.length>1){
+    const first=pnladl[0].key;
+    pnladl.slice(1).forEach(b=>{
+      if(b.key!==first)
+        add(b.start+2,1,(lines[b.start+1]||'').length||1,"err",`Mensagem de outro voo (<b>${b.key}</b>) na mesma validação — o PNL/ADL valida-se um voo de cada vez (primeiro voo: <b>${first}</b>). Validar separadamente.`,REF.flight);
+    });
+  }
+
+  // estado partilhado entre partes da mesma mensagem
+  const shared={ dest:{}, groups:{}, parts:[] };
+  // pré-filtrar: se houver blocos de voos diferentes, valida-se apenas o primeiro voo
+  const primaryKey=blocks.find(b=>b.key)?.key||null;
+  const toValidate=blocks.filter(b=>!b.key||b.key===primaryKey||(b.type!=='PNL'&&b.type!=='ADL'));
+  toValidate.forEach((b,k)=>validateBlock(lines,b,k===toValidate.length-1,add,shared));
+
+  /* ---- verificações agregadas (todas as partes) ---- */
+  Object.values(shared.dest).forEach(d=>{
+    if(d.declared!==d.sum)
+      add(d.line,1,0,"warn",`Destino <b>${d.key}</b>: total declarado ${d.declared}, soma dos Name Elements ${d.sum}. Verificar (lugares ZZ/NONAMES contam para o total).`,REF.totals);
+  });
+  // ---- coerência CFG × RBD × Totals ----
+  if(shared.cfg){
+    const RANK={P:1,F:1,A:1,J:2,C:2,D:2,I:2,Z:2,W:3,S:3,Y:4,M:4,B:4,K:4};
+    // (a) compartimento do CFG que não consta do RBD
+    if(shared.rbd){
+      const unknown=shared.cfg.order.filter((c,i,a)=>a.indexOf(c)===i && !shared.rbd.comp.has(c));
+      if(unknown.length)
+        add(shared.cfg.line,1,shared.cfg.raw.length,"warn",`Compartimento(s) <b>${unknown.join(", ")}</b> na configuração <b>${shared.cfg.raw}</b> não constam do elemento <b>${shared.rbd.raw}</b> (linha ${shared.rbd.line}) — confirmar a coerência entre CFG e RBD.`,REF.cfg);
+    }
+    // (b) ordem descendente dos compartimentos (RP 1707b §2.12.3)
+    for(let i=1;i<shared.cfg.order.length;i++){
+      const a=RANK[shared.cfg.order[i-1]], b=RANK[shared.cfg.order[i]];
+      if(a!==undefined && b!==undefined && b<a){
+        add(shared.cfg.line,1,shared.cfg.raw.length,"warn",`Compartimentos fora de ordem em <b>${shared.cfg.raw}</b> — a configuração lista-se por ordem descendente da cabine (F→C→Y), RP 1707b §2.12.3.`,REF.cfg);
+        break;
+      }
+    }
+    // (c) passageiros por compartimento vs lugares instalados
+    if(shared.paxByClass){
+      Object.entries(shared.paxByClass).forEach(([cls,pax])=>{
+        const fitted=shared.cfg.seats[cls];
+        if(fitted!==undefined && pax>fitted)
+          add(shared.cfg.line,1,shared.cfg.raw.length,"err",`Compartimento <b>${cls}</b>: os Totals by Destination somam <b>${pax}</b> passageiros, mas a configuração <b>${shared.cfg.raw}</b> tem apenas <b>${fitted}</b> lugares.`,REF.cfg);
+      });
+    }
+  }
+
+  Object.values(shared.groups).forEach(g=>{
+    if(g.declared==null) return;
+    // (A) identificador de grupo reutilizado em reservas diferentes -> ERRO com highlight em todos os membros
+    if(g.pnrs && g.pnrs.size>1){
+      const pnrList=[...g.pnrs].join(", ");
+      const hasZZ=g.members.some(mb=>mb.isZZ);
+      g.members.forEach((mb,i)=>{
+        const first=i===0;
+        const zzMsg=`Placeholder <b>1ZZ/</b> e passageiro real no grupo <b>-${g.id}${g.declared}</b> têm PNRs diferentes (<b>${pnrList}</b>) — o placeholder de lugar bloqueado partilha o PNR do passageiro real (PSCRM §2.9 Block Seats Indicator).`;
+        const dupMsg=`Identificador de grupo <b>-${g.id}${g.declared}</b> reutilizado em reservas diferentes (<b>${pnrList}</b>) — o identificador é único por reserva. Atribuir um identificador diferente a cada PNR.`;
+        add(mb.line,mb.col,mb.len,"err",
+          first ? (hasZZ?zzMsg:dupMsg)
+                : (hasZZ?`Placeholder/passageiro do grupo <b>-${g.id}${g.declared}</b> com PNR diferente (ver primeira ocorrência).`
+                        :`Identificador de grupo <b>-${g.id}${g.declared}</b> reutilizado noutra reserva (ver primeira ocorrência).`),
+          REF.group,
+          first?undefined:{dup:true});
+      });
+      return; // não gerar também o erro de soma (é consequência disto)
+    }
+    // (B) regras clássicas de soma vs declarado por secção
+    if(g.msgType==="ADL" && g.section==="CHG"){
+      if(g.sum>g.declared)
+        add(g.lines[0],1,0,"err",`Grupo <b>-${g.id}${g.declared}</b> em ADL CHG: ${g.sum} passageiros alterados mas o grupo só tem ${g.declared} — não pode exceder o total do grupo.`,REF.group);
+    } else if(g.msgType==="ADL" && g.section==="DEL"){
+      if(g.sum!==g.declared)
+        add(g.lines[0],1,0,"err",`Grupo <b>-${g.id}${g.declared}</b> em ADL DEL: para apagar um grupo têm de estar listados todos os ${g.declared} passageiros (listados: ${g.sum}). Apagar um grupo remove-o inteiro.`,REF.group);
+    } else {
+      if(g.sum!==g.declared)
+        add(g.lines[0],1,0,"err",`Grupo <b>-${g.id}${g.declared}</b>${g.section?" em ADL "+g.section:""}: o identificador indica ${g.declared} passageiro(s) na reserva, mas foram listados ${g.sum}.`,REF.group);
+    }
+  });
+  // partes por voo: a ORDEM é irrelevante (o processamento só arranca com todas);
+  // alertar apenas para partes EM FALTA, duplicadas, e ausência da parte final.
+  // ADL: cada mensagem é independente (a mesma PART pode aparecer em ADLs diferentes).
+  const byFlight={};
+  shared.parts.filter(p=>p.num!==null).forEach(p=>{
+    const bk=blocks.find(b=>b.start<p.line && p.line<=b.limit);
+    const scope=(bk && bk.type==='ADL')?("#"+bk.start):"";
+    const key=(p.key||"?")+scope;
+    (byFlight[key]=byFlight[key]||[]).push(p);
+  });
+  Object.values(byFlight).forEach(pn=>{
+    const nums=pn.map(p=>p.num);
+    const set=[...new Set(nums)].sort((a,b)=>a-b);
+    const max=set[set.length-1];
+    const missing=[]; for(let i=1;i<=max;i++) if(!set.includes(i)) missing.push("PART"+i);
+    if(missing.length)
+      add(pn[0].line,1,0,"warn",`Falta${missing.length>1?"m":""} <b>${missing.join(", ")}</b> deste voo — sem todas as partes, o processamento não pode iniciar (e as somas de totais/grupos ficam incompletas).`,REF.flight);
+    const dups=set.filter(v=>nums.filter(x=>x===v).length>1);
+    if(dups.length)
+      add(pn[0].line,1,0,"warn",`Parte(s) duplicada(s): <b>PART${dups.join(", PART")}</b>.`,REF.flight);
+    const fin=pn.find(p=>p.final);
+    if(fin && fin.num!==max)
+      add(fin.line,1,0,"err",`A parte final (END do tipo) é a <b>PART${fin.num}</b>, mas existe <b>PART${max}</b> — a parte com o END do tipo tem de ser a última.`,REF.end);
+    if(!fin && pn.length)
+      add(pn[0].line,1,0,"warn",`Nenhuma das partes termina com o END do tipo (todas em ENDPARTn) — falta(m) a(s) parte(s) a seguir a PART${max}.`,REF.end);
+  });
+
+  // dedupe: se há um erro específico de espaçamento no mesmo sítio, o aviso genérico é redundante
+  const dedup=findings.filter(f=>!(f.sev==="warn" && /espaços consecutivos/.test(f.msg) &&
+    findings.some(e=>e.sev==="err" && e.line===f.line && e.col===f.col && /espaços consecutivos/.test(e.msg))));
+  dedup.sort((a,b)=>a.line-b.line || a.col-b.col);
+  // avisos de SSR/elemento desconhecido: uma entrada na lista por código (todas as ocorrências continuam marcadas no telex)
+  const firstByCode={};
+  dedup.forEach(f=>{
+    if(f.tag!=="ssrunk" && f.tag!=="elemunk" && f.tag!=="titlespace" && f.tag!=="trailws") return;
+    const k=f.tag+"|"+f.code;
+    if(firstByCode[k]){ f.dup=true; firstByCode[k].more=(firstByCode[k].more||0)+1; }
+    else firstByCode[k]=f;
+  });
+  Object.values(firstByCode).forEach(f=>{ if(f.more) f.msg+=` <b>(${f.more+1} ocorrências — listada uma vez; todas marcadas na impressão telex)</b>`; });
+  return dedup;
+}
+
+function validateBlock(lines, block, isLastBlock, add, shared){
+  // delimitar o bloco: do identificador até ao END (inclusive); o que vier
+  // depois (trailer, cabeçalho da parte seguinte) fica fora do escopo
+  let endIdx = -1;
+  for(let i=block.start;i<block.limit;i++){
+    if(/^END(PNL|ADL|PSM|PTM|PFS|PIL|SOM|SPM|FTL|PRL|ETL|PART\s*\d{1,2})\s*$/i.test(lines[i].trim())){ endIdx=i; break; }
+  }
+  const scopeEnd = endIdx>=0 ? endIdx+1 : block.limit;
+
+  const blkId=(lines[block.start]||'').trim().toUpperCase();
+  const blkType=(blkId==='PASSENGER INFORMATION LIST')?'PIL':blkId;
+  /* ---- passagem 1: caracteres e espaçamento (só dentro do bloco) ---- */
+  for(let i=block.start;i<scopeEnd;i++){
+    const ln=lines[i], n=i+1;
+    if(ln.length>RULES.maxLine)
+      add(n,RULES.maxLine+1,ln.length-RULES.maxLine,"err",`Linha com ${ln.length} caracteres — excede o limite de 64.`,REF.len);
+    let m;
+    // Minúsculas são normalizadas silenciosamente (não geram erro)
+    const upper = ln.toUpperCase();
+    const inv = /[^A-Z0-9 .\/\-=()?:,+']/g;
+    while((m=inv.exec(upper))!==null){
+      const ch = m[0]==='\t' ? 'TAB' : m[0];
+      add(n,m.index+1,1,"err",`Carácter inválido <b>${ch}</b> — fora do conjunto admitido em telex.`,REF.charset);
+    }
+    const tr = ln.match(/[ \t]+$/);
+    if(tr && ln.trim()!=="")
+      add(n,tr.index+1,tr[0].length,"warn","Espaço(s) no fim da linha.",REF.space,{tag:"trailws",code:"trailws"});
+    const ld = ln.match(/^ +/);
+    if(ld && ln.trim()!==""){
+      if(blkType==='PSM' && ld[0].length===1){/* onward connection começa com 1 espaço (RP1715 §2.9.5) */}
+      else add(n,1,ld[0].length,"err","Espaço(s) no início da linha — os elementos começam na coluna 1"+(blkType==='PSM'?" (exceção: onward connection no PSM leva exatamente 1 espaço)":"")+".",REF.space);
+    }
+    const dbl=/ {2,}/g;
+    while((m=dbl.exec(ln))!==null){
+      if(ld && m.index < ld[0].length) continue;
+      if(tr && m.index >= tr.index) continue;
+      if(blkType==='PSM' && m[0].length===2){/* dois espaços antes do nº de lugar (RP1715 §2.8.3) */}
+      else add(n,m.index+1,m[0].length,"warn",`${m[0].length} espaços consecutivos — o separador standard é um único espaço (exceções: tabelas AVAIL/TRANSIT; 2 espaços antes do lugar no PSM).`,REF.space);
+    }
+    if(ln.trim()==="")
+      add(n,1,1,"err","Linha em branco no corpo da mensagem.",REF.space);
+  }
+
+  /* ---- passagem 2: estrutura do bloco ---- */
+  let idx=block.start;
+  const U=lines;
+  // identificador
+  const raw0=U[idx].trim().toUpperCase();
+  const msgType=(raw0==='PASSENGER INFORMATION LIST')?'PIL':raw0;
+  idx++;
+  // ramificação: PIL e PTM têm estruturas próprias
+  if(msgType==='PIL'){ return validatePIL(U,block,scopeEnd,idx,add,shared,isLastBlock); }
+  if(msgType==='PTM'){ return validatePTM(U,block,scopeEnd,idx,add,shared,isLastBlock); }
+  if(msgType==='MVT'){ return validateMVT(U,block,scopeEnd,idx,add); }
+  if(msgType==='DIV'){ return validateDIV(U,block,scopeEnd,idx,add); }
+  if(msgType==='SSM'||msgType==='ASM'){ return validateSCHED(msgType,U,block,scopeEnd,idx,add); }
+  // PNL / ADL / PSM / PFS: flight element standard
+  let declaredPart=null, partRec=null;
+  if(idx<scopeEnd){
+    const f=U[idx].toUpperCase().trimEnd(); const n=idx+1;
+    const RXF=/^([A-Z0-9]{2}[A-Z]?)(\d{1,4})([A-Z])?\/(\d{2})([A-Z]{3}) ([A-Z]{3}) PART(\d{1,2})$/;
+    const fm=f.match(RXF);
+    if(!fm){
+      if(!spacingDiag(f,RXF,n,add,REF.flight,"Flight Element"))
+        add(n,1,U[idx].length||1,"err","Flight Element inválido — formato: <b>XX999/DDMMM AAA PARTn</b> (ex.: KL774/06JUN ZRH PART1).",REF.flight);
+    }else{
+      const day=parseInt(fm[4],10);
+      if(day<1||day>31) add(n,f.indexOf("/")+2,2,"err",`Dia <b>${fm[4]}</b> inválido (01–31).`,REF.flight);
+      if(!RULES.months.includes(fm[5])) add(n,f.indexOf("/")+4,3,"err",`Mês <b>${fm[5]}</b> inválido — usar JAN…DEC.`,REF.flight);
+      declaredPart=parseInt(fm[7],10);
+      partRec={num:declaredPart,line:n,key:fm[1]+fm[2]+(fm[3]||"")+"/"+fm[4]+fm[5]};
+      shared.parts.push(partRec);
+    }
+    idx++;
+  }
+
+  let sawTotals=false, sawEnd=false, endToken="";
+  let currentKey=null; const adlHeaders=[];
+  let lastWasR=false, inSI=false, psmSvc=false, lastNameCount=null;
+  let adlSection=null; // "ADD" | "CHG" | "DEL"
+  const scopeId=(msgType==="ADL")?("ADL#"+block.start):("BLK#"+block.start);
+  let lastGroupMember=null, lastGroupObj=null; // para atribuir .L/ standalone ao passageiro anterior
+
+  for(; idx<scopeEnd; idx++){
+    const rawLine=U[idx]; const line=rawLine.toUpperCase().trimEnd(); const n=idx+1;
+    if(line==="") continue;
+
+    let m;
+    // Supplementary Information: depois de SI, texto livre até ao END
+    if(inSI && !/^END/.test(line)) continue;
+
+    /* ---------- linhas específicas do PSM (RP 1715) ---------- */
+    if(msgType==="PSM"){
+      // recap por destino: -DTW 5PAX/8SSR  |  -FAR NIL
+      if((m=line.match(/^-([A-Z]{3}) (NIL|(\d{1,3})PAX ?\/ ?(\d{1,3})SSR)$/))){ lastWasR=false; continue; }
+      if(line.startsWith("-")){
+        add(n,1,line.length,"err","Recap de destino do PSM inválido — <b>-AAA nPAX/nSSR</b> ou <b>-AAA NIL</b> (RP 1715 §2.5).",REF.elem);
+        continue;
+      }
+      // compartimento: F CLASS 5PAX/7SSR | F CLASS NIL | F CLASS 2PAX / 3SSR
+      if((m=line.match(/^([A-Z]) CLASS (NIL|(\d{1,3})PAX ?\/ ?(\d{1,3})SSR)$/))){ lastWasR=false; continue; }
+      if(/^[A-Z] CLASS/.test(line)){
+        add(n,1,line.length,"err","Linha de compartimento do PSM inválida — <b>X CLASS nPAX/nSSR</b> ou <b>X CLASS NIL</b> (RP 1715 §2.7).",REF.elem);
+        continue;
+      }
+      // onward connection: 1 espaço + voo (sem .O/)
+      if(/^ \S/.test(rawLine)){
+        const oc=line.trim();
+        if(!RX.fltinfo.test(oc))
+          add(n,2,oc.length,"err","Onward connection do PSM malformada — dados do voo sem o ID .O/ (RP 1715 §2.9, ex.: SR1234F27ZRH).",REF.elem);
+        lastWasR=false; continue;
+      }
+      // linha de serviço/contagens: CODE [nnnC nnnC…] | CODE texto livre
+      if((m=line.match(/^([A-Z]{3,4})( .*)?$/)) && !/^\d/.test(line) && line!=="SI" && line!=="NIL" && !/^END/.test(line)){
+        const code=m[1];
+        const rest=(m[2]||"").trim();
+        if(!RULES.psmCodes.has(code)){
+          add(n,1,code.length,"warn",`<b>${code}</b> não consta da lista do PSM (RP 1715 §2.6.5) — pode ser código bilateral; confirmar com o recetor.`,REF.ssr,{tag:"ssrunk",code});
+        }
+        // se seguem contagens por compartimento, validar o formato nnnC
+        if(rest && /^\d/.test(rest)){
+          rest.split(/ +/).forEach(tok=>{
+            if(!/^\d{3}[A-Z]$/.test(tok))
+              add(n,line.indexOf(tok)+1,tok.length,"err",`Contagem <b>${tok}</b> inválida — três dígitos + compartimento (ex.: 003F), RP 1715 §2.6.4.`,REF.elem);
+          });
+        }
+        checkHyphens(line, n, 0, add, code);
+        psmSvc=true; lastWasR=false; continue;
+      }
+      // continuação (overflow) do free text de um serviço na linha seguinte
+      if(psmSvc && !/^\d/.test(line) && !line.startsWith("-") && !/^END/.test(line) && line!=="SI"){
+        continue;
+      }
+      // nome + lugar: 1APELIDO/NOME[TITULO]  22A  (RP1715 §2.8)
+      if(/^\d/.test(line)){
+        if(!/-([A-Z]{1,2})(\d{1,3})/.test(line)){ lastGroupMember=null; lastGroupObj=null; }
+
+        psmSvc=false;
+        const nmP=line.match(/^(\d{1,3})([A-Z]+(?:\/[A-Z]+(?: [A-Z]+)*)+)( {1,2}(\d{1,3}[A-Z]{1,2}))?$/);
+        if(!nmP){
+          add(n,1,line.length,"err","Name Element do PSM inválido — <b>1APELIDO/NOME[TITULO]</b> + opcionalmente dois espaços e o lugar (RP 1715 §2.8, ex.: 1MILLER/JACKMR  23D).",REF.name);
+        }else{
+          if(parseInt(nmP[1],10)!==1)
+            add(n,1,nmP[1].length,"err","No PSM cada passageiro ocupa a sua própria linha — a contagem é sempre <b>1</b> (RP 1715 §2.8.5).",REF.name);
+        }
+        lastWasR=false; continue;
+      }
+      psmSvc=false;
+    }
+
+    /* ---------- linhas específicas de SPM/SOM (RP 1711/1712) ---------- */
+    if(msgType==="SPM"||msgType==="SOM"){
+      // -AAA.06EF 14ABC — lugares por destino
+      if((m=line.match(/^-([A-Z]{3})\.(.+)$/))){
+        m[2].split(/ +/).forEach(tok=>{
+          if(!/^\d{1,3}[A-Z]{1,7}$/.test(tok))
+            add(n,line.indexOf(tok)+1,tok.length,"err",`Lugar <b>${tok}</b> inválido — fila (1–3 dígitos) + letra(s) de coluna, ex.: 06EF 14ABC (RP 171${msgType==="SPM"?"1":"2"} §2.5).`,REF.elem);
+        });
+        lastWasR=false; continue;
+      }
+      if(line.startsWith("-")){
+        add(n,1,line.length,"err",`Seats by Destination de ${msgType} inválido — <b>-AAA.lugares</b> (ex.: -DEN.06EF 14ABC).`,REF.elem);
+        continue;
+      }
+      // categorias AHM 510 (SOM): SOC, PAD, CAT, XCR — linha isolada ou com lugares
+      if((m=line.match(/^(SOC|PAD|CAT|XCR)( .+)?$/))){
+        if(m[2]) m[2].trim().split(/ +/).forEach(tok=>{
+          if(!/^\d{1,3}[A-Z]{1,7}$/.test(tok))
+            add(n,line.indexOf(tok)+1,tok.length,"err",`Lugar <b>${tok}</b> inválido na categoria ${m[1]}.`,REF.elem);
+        });
+        lastWasR=false; continue;
+      }
+    }
+
+    /* ---------- ETL: cabeçalho de não embarcados (RP 1719c) ---------- */
+    if(msgType==="ETL" && line==="NOT BOARDED"){ lastWasR=false; continue; }
+
+    /* ---------- linhas específicas do PFS (RP 1719) ---------- */
+    if(msgType==="PFS"){
+      // Numerics by Destination: FCO 13/047/032 PAD0/2/1
+      if((m=line.match(/^([A-Z]{3}) (\d{1,3}(\/\d{1,3})*)( PAD\d{1,3}(\/\d{1,3})*)?$/))){ lastWasR=false; continue; }
+    }
+
+    if((m=line.match(/^END(PNL|ADL|PSM|PFS|SOM|SPM|FTL|PRL|ETL|PART\s*(\d{1,2}))$/))){
+      lastGroupMember=null; lastGroupObj=null;
+      sawEnd=true; endToken=line;
+      if(m[1].startsWith("PART")){
+        const p=parseInt(m[2],10);
+        if(declaredPart!==null && p!==declaredPart)
+          add(n,4,line.length-3,"err",`<b>${line}</b> não coincide com o cabeçalho desta parte (PART${declaredPart}).`,REF.end);
+      }else{
+        if(m[1]!==msgType)
+          add(n,1,line.length,"err",`<b>${line}</b> não corresponde ao tipo de mensagem <b>${msgType}</b>.`,REF.end);
+        if(partRec) partRec.final=true;
+      }
+      lastWasR=false;
+      continue;
+    }
+
+    if(/^ANA\/\d{3,6}$/.test(line)){
+      if(msgType==="PNL") add(n,1,line.length,"warn","Elemento ANA é usado nas partes de ADL/CAL, não em PNL.",REF.elem);
+      lastWasR=false; continue;
+    }
+    if(line.startsWith("RBD")){
+      if(!/^RBD( [A-Z]\/[A-Z]+)+$/.test(line))
+        add(n,1,line.length,"err","Class Codes Element inválido — formato: <b>RBD F/FA J/JCD Y/YBK…</b> (compartimento/classes, separados por espaço).",REF.rbd);
+      else{
+        // RP1707b §2.10: compartimento / fare classes (RBD) associadas
+        const comp=new Set(), fare=new Set();
+        line.slice(3).trim().split(/ +/).forEach(pair=>{
+          const [c,f]=pair.split("/");
+          if(c) comp.add(c);
+          if(f) f.split("").forEach(x=>fare.add(x));
+        });
+        shared.rbd={comp,fare,line:n,raw:line};
+      }
+      lastWasR=false; continue;
+    }
+    if(line.startsWith("CFG")){
+      if(!/^CFG\/[A-Z0-9]{2,}(\/[A-Z0-9]{2,3})?( [A-Z]{3} [A-Z0-9]{2,}(\/[A-Z0-9]{2,3})?)*$/.test(line))
+        add(n,1,line.length,"err","Seat Configuration inválida — ex.: <b>CFG/020F179Y</b> ou <b>CFG/044F133Y/733 GVA 044F122Y/MD8</b>.",REF.cfg);
+      else{
+        // RP1707b §2.12: contagem + código do compartimento, por ordem descendente.
+        // Só o primeiro troço (embarque); aceita 020F e F20.
+        const seg=line.slice(4).split(" ")[0].split("/")[0];
+        const seats={}; const order=[];
+        const rx=/(\d{1,3})([A-Z])|([A-Z])(\d{1,3})/g; let cm;
+        while((cm=rx.exec(seg))!==null){
+          const code=cm[2]||cm[3], cnt=parseInt(cm[1]||cm[4],10);
+          seats[code]=(seats[code]||0)+cnt; order.push(code);
+        }
+        if(order.length) shared.cfg={seats,order,line:n,raw:line};
+      }
+      lastWasR=false; continue;
+    }
+    if(/^STD\//.test(line)){ if(!/^STD\/([01]\d|2[0-3])[0-5]\d$/.test(line)) add(n,5,4,"err","Hora STD inválida — relógio de 24h (HHMM).",REF.elem); lastWasR=false; continue; }
+    if(/^ATD\//.test(line)){ if(!/^ATD\/(\d{2})?([01]\d|2[0-3])[0-5]\d$/.test(line)) add(n,5,6,"err","ATD inválido — formato HHMM ou DDHHMM.",REF.elem); lastWasR=false; continue; }
+    if(line==="SI"){ inSI=true; lastWasR=false; continue; }
+    if(/^(FQT |AVAIL$|TRANSIT$|NIL$)/.test(line)){ lastWasR=false; continue; }
+
+    if(line==="DEL"||line==="ADD"||line==="CHG"){
+      if(msgType!=="ADL")
+        add(n,1,3,"err",`Cabeçalho <b>${line}</b> só é permitido em mensagens ADL.`,REF.adl);
+      adlHeaders.push(line); adlSection=line; lastWasR=false; continue;
+    }
+
+    if(line.startsWith("-")){
+      lastGroupMember=null; lastGroupObj=null;
+      const tm=line.match(/^-([A-Z]{3})(\d{2,3})([A-Z])(-PAD(\d{1,3}))?$/);
+      const cm=line.match(/^-([A-Z]{3})$/);
+      if(tm){
+        sawTotals=true;
+        // RP1708 §2.5: a construção é por compartimento OU por fare class — em qualquer
+        // caso o código tem de constar do Class Codes Element (RBD) da mensagem
+        if(shared.rbd){
+          const cls=tm[3];
+          if(!shared.rbd.comp.has(cls) && !shared.rbd.fare.has(cls)){
+            const col=5+tm[2].length;
+            add(n,col,1,"err",`Classe <b>${cls}</b> não consta do elemento <b>${shared.rbd.raw}</b> (linha ${shared.rbd.line}) — o código do Totals by Destination tem de ser um compartimento ou uma fare class declarada (RP 1708 §2.5 · RP 1707b §2.10).`,REF.totals);
+          }
+        }
+        if(msgType==="PNL"||msgType==="ADL"){
+          const key=tm[1]+String(parseInt(tm[2],10)).padStart(2,"0")+tm[3];
+          const declared=parseInt(tm[2],10);
+          // ADL: agregar por bloco (cada mensagem ADL é independente); PNL: agregado por voo
+          const dk=(msgType==="ADL"?scopeId:"PNL")+"|"+tm[1]+"|"+tm[3];
+          const d=shared.dest[dk] || (shared.dest[dk]={key,declared,sum:0,line:n,msgType});
+          if(d.declared!==declared)
+            add(n,2,line.length-1,"warn",`Totals de <b>${tm[1]}/${tm[3]}</b> redeclarados com valor diferente (${d.declared} vs ${declared}) noutra parte.`,REF.totals);
+          currentKey=dk;
+          if(msgType==="PNL"){
+            shared.paxByClass=shared.paxByClass||{};
+            shared.paxByClass[tm[3]]=(shared.paxByClass[tm[3]]||0)+parseInt(tm[2],10);
+          }
+        }
+      }else if(cm){
+        currentKey=null;
+      }else{
+        add(n,1,line.length,"err","Totals by Destination inválido — formato: <b>-AAA99C</b> (+ opcional <b>-PADnn</b>), ex.: -FRA03F-PAD15.",REF.totals);
+      }
+      lastWasR=false; continue;
+    }
+
+    if((m=line.match(/^([A-Z]{4,6}) (\d{1,3})([A-Z])$/))){
+      if(!RULES.categories.has(m[1]))
+        add(n,1,m[1].length,"warn",`Categoria <b>${m[1]}</b> não reconhecida (esperado NOSHO/GOSHO…).`,REF.elem);
+      lastWasR=false; continue;
+    }
+
+    if(line.startsWith(".")){
+      // colheita retroativa de .L/ standalone (posição do .L/ não é semântica)
+      if(lastGroupMember && lastGroupObj){
+        (line.match(/\.L\/[A-Z0-9]+(\/[A-Z0-9]{2,3})?/g)||[]).forEach(x=>{
+          const pnr=x.replace(/^\.L\//,"");
+          lastGroupMember.pnrs.push(pnr);
+          lastGroupObj.pnrs.add(pnr.split("/")[0]);
+        });
+      }
+      validateDotElements(rawLine, n, 0, add, {standalone:true, lastWasR, elemCount:lastNameCount, msgType});
+      if(/^\.RN\//.test(line)){
+        if(!lastWasR) add(n,1,4,"err",".RN/ (continuação de remarks) sem elemento .R/ imediatamente antes.",REF.rn);
+      } else {
+        lastWasR = /(^| )\.R\//.test(line);
+      }
+      continue;
+    }
+
+    if(/^\d/.test(line)){
+      // fronteira de colheita retroativa: se este Name Element não pertence ao mesmo
+      // identificador de grupo do anterior, terminar aqui (os .L/ seguintes já não são do grupo)
+      const nextGrp=line.match(/-([A-Z]{1,2})(\d{1,3})/);
+      if(lastGroupObj && (!nextGrp || nextGrp[1]!==lastGroupObj.id)){ lastGroupMember=null; lastGroupObj=null; }
+      const nm=rawLine.toUpperCase().trimEnd();
+      const nmMatch=nm.match(/^(\d{1,3})(NONAMES|[A-Z]+(?:[ \/][A-Z]+)*)(-([A-Z]{1,2})(\d{1,3}))?(?=( ?\.|$))/);
+      if(!nmMatch){
+        // diagnóstico dirigido ao problema real
+        const grpBad=nm.match(/^(\d{1,3}[A-Z]+(?:[ \/][A-Z]+)*)-([A-Z]{1,2})(?![0-9])/);
+        if(grpBad){
+          const col=grpBad[1].length+2;
+          add(n,col,grpBad[2].length,"err",`Identificador de grupo <b>-${grpBad[2]}</b> incompleto — falta a contagem de passageiros (ex.: <b>-${grpBad[2]}2</b> para uma reserva de 2 pax).`,REF.group);
+        } else if(!/^\d+[A-Z]/.test(nm)){
+          add(n,1,rawLine.length,"err","Name Element inválido — tem de começar por dígito(s) seguidos do apelido (ex.: <b>1CURRIE/MARIE MRS</b>).",REF.name);
+        } else if(!/\//.test(nm.split(" ")[0])){
+          add(n,1,rawLine.length,"err","Name Element sem separador — o apelido e nome próprio separam-se por <b>/</b> (ex.: 1CURRIE/MARIE MRS).",REF.name);
+        } else {
+          add(n,1,rawLine.length,"err","Name Element inválido — formato: <b>9APELIDO/NOME[ TITULO][/NOME2…][-Xn]</b> (ex.: 1CURRIE/MARIE MRS, 2COSTA/ANAMRS/TIAGOMSTR).",REF.name);
+        }
+        lastWasR=false; continue;
+      }
+      const count=parseInt(nmMatch[1],10);
+      const namePart=nmMatch[2];
+      const grpId=nmMatch[4], grpTotal=nmMatch[5]?parseInt(nmMatch[5],10):null;
+      if((msgType==="PNL"||msgType==="ADL") && currentKey && shared.dest[currentKey]) shared.dest[currentKey].sum+=count;
+
+      if(namePart!=="NONAMES" && !namePart.startsWith("ZZ/")){
+        const segs=namePart.split("/");
+        if(segs.length<2)
+          add(n,nmMatch[1].length+1,namePart.length,"err","Name Element sem nome próprio — esperado APELIDO/NOME…",REF.name);
+        else{
+          const given=segs.length-1;
+          if(given!==count)
+            add(n,1,nmMatch[1].length,"err",`Contagem <b>${count}</b> não coincide com o nº de nomes listados no elemento (<b>${given}</b>).`,REF.name);
+          if(msgType!=="PFS") segs.slice(1).forEach(s=>{
+            if(!RULES.titles.some(t=>s.endsWith(t)))
+              add(n,nm.indexOf(s)+1,s.length,"info",`Nome <b>${s}</b> sem título reconhecido (MR/MRS/MS/MSTR/MISS/DR…).`,REF.name);
+            else{
+              const sp=s.match(/ (M(R|RS|S|STR|ISS)|DR|PROF|CHD|INF|REV|SIR|LADY|CAPT)$/);
+              if(sp)
+                add(n,nm.indexOf(s)+1+sp.index,sp[0].length,"info","Título separado por espaço — aceite, mas a forma clássica do manual é colada ao nome (ex.: MARIEMRS).",REF.name,{tag:"titlespace",code:"titlespace"});
+            }
+          });
+        }
+      }
+      if(grpId){
+        // escopo: PNL -> agregado por voo; ADL -> por secção (ADD/CHG/DEL) dentro deste bloco
+        const scopeKey=(msgType==="ADL"?scopeId+"#"+(adlSection||"?"):"PNL")+"|"+grpId;
+        const sectionLbl=(msgType==="ADL"&&adlSection)?` na secção ${adlSection}`:"";
+        const keyLbl=currentKey?currentKey.split("|").slice(-2).join("/"):null;
+        // extrair o(s) .L/ deste elemento (PNR address) para depois detetar reutilização
+        const pnrs=[];
+        (rawLine.toUpperCase().match(/\.L\/[A-Z0-9]+(\/[A-Z0-9]{2,3})?/g)||[]).forEach(x=>pnrs.push(x.replace(/^\.L\//,"")));
+        const g=shared.groups[scopeKey]||(shared.groups[scopeKey]={id:grpId,section:adlSection,msgType,declared:grpTotal,sum:0,lines:[],key:currentKey,keyLbl,pnrs:new Set(),members:[]});
+        g.sum+=count; g.lines.push(n);
+        // 1ZZ/ é placeholder de lugar bloqueado (PSCRM §2.9 Block Seats Indicator):
+        // o PNR é herdado do passageiro real do mesmo grupo. Se traz .L/ próprio, tem de bater.
+        const isZZ=namePart.startsWith("ZZ/") || namePart==="ZZ";
+        const memberRec={line:n,col:1,len:nm.length,pnrs,isZZ};
+        g.members.push(memberRec);
+        pnrs.forEach(p=>g.pnrs.add(p.split("/")[0]));
+        lastGroupMember=memberRec; lastGroupObj=g;
+        if(g.declared!==grpTotal)
+          add(n,1,nm.length,"warn",`Grupo <b>-${grpId}</b> com totais divergentes${sectionLbl} (${g.declared} vs ${grpTotal}).`,REF.group);
+        if(currentKey && g.key && currentKey!==g.key)
+          add(n,1,nm.length,"err",`Grupo <b>-${grpId}${grpTotal??""}</b> aparece em <b>${keyLbl}</b> mas outros membros estão em <b>${g.keyLbl}</b> — passageiros da mesma reserva não podem estar em classes/destinos diferentes.`,REF.group);
+        if(currentKey && !g.key){ g.key=currentKey; g.keyLbl=keyLbl; }
+      }
+      const rest=nm.slice(nmMatch[0].length);
+      if(rest.length){
+        if(msgType==="PSM"){
+          // RP1715 §2.8.3: nome + dois espaços + lugar (aceitamos 1–2 na prática de extração)
+          if(!/^ {1,2}\d{1,3}[A-Z]{1,2}$/.test(rest))
+            add(n,nmMatch[0].length+1,rest.length,"err","Depois do nome no PSM só pode seguir o nº de lugar (dois espaços + lugar, RP 1715 §2.8.3, ex.: 1MILLER/JACKMR  23D).",REF.name);
+        }else{
+          if(rest.startsWith(".")){
+            const el=(rest.match(/^\.[A-Z0-9]{1,3}\//)||[rest.slice(0,3)])[0];
+            add(n,nmMatch[0].length+1,1,"err",
+              grpId
+                ? `Falta um espaço entre o identificador de grupo <b>-${grpId}${grpTotal}</b> e o elemento <b>${el}</b> — os elementos .X/ separam-se do nome por um espaço.`
+                : `Falta um espaço entre o nome e o elemento <b>${el}</b> — os elementos .X/ separam-se do nome por um espaço.`,
+              REF.name);
+          } else if(!rest.startsWith(" ."))
+            add(n,nmMatch[0].length+1,rest.length,"err","Depois do nome, os elementos .X/ são separados por um espaço.",REF.name);
+          validateDotElements(rawLine, n, nmMatch[0].length, add, {standalone:false, elemCount:count, msgType});
+        }
+      }
+      lastNameCount=count;
+      lastWasR=/ \.R\//.test(nm);
+      continue;
+    }
+
+    add(n,1,line.length,"err","Linha não reconhecida — não corresponde a nenhum elemento PNL/ADL do standard.",REF.elem);
+    lastWasR=false;
+  }
+
+  /* ---- verificações finais do bloco ---- */
+  if(!sawEnd)
+    add(scopeEnd,1,Math.max((U[scopeEnd-1]||"").length,1),"err",`Falta o End Element (END${msgType} / ENDPARTn) nesta parte.`,REF.end);
+  if(msgType==="PNL" && !sawTotals && !U.slice(block.start,scopeEnd).some(l=>l.trim()==="NIL"))
+    add(block.start+1,1,1,"warn","Sem Totals by Destination (-AAA99C) nem NIL — um PNL mostra sempre os totais, mesmo a zero.",REF.totals);
+  if(msgType==="ADL"){
+    const seq=adlHeaders.join(",");
+    const expected=["DEL","ADD","CHG"].filter(h=>adlHeaders.includes(h)).join(",");
+    if(seq!==expected)
+      add(block.start+1,1,1,"err",`Cabeçalhos ADL fora de ordem (${seq||"nenhum"}) — a sequência é DEL, ADD, CHG (cada um só aparece se tiver entradas).`,REF.adl);
+  }
+}
+
+
+
+/* ============================ VALIDADOR MVT (AHM 780) ============================ */
+const T4=/^([01]\d|2[0-3])[0-5]\d$/;           // HHMM
+const T6=/^(0[1-9]|[12]\d|3[01])([01]\d|2[0-3])[0-5]\d$/; // DDHHMM
+function tOK(s){ return s.length===4?T4.test(s):T6.test(s); }
+function validateMVT(U,block,scopeEnd,idx,add){
+  // linha do voo: XX999/DD[.REG][.STATION]
+  if(idx<scopeEnd){
+    const f=U[idx].toUpperCase().trimEnd(); const n=idx+1;
+    const fm=f.match(/^([A-Z0-9]{2}[A-Z]?\d{1,4}[A-Z]?)\/(\d{2})(\.([A-Z0-9]{2,10}))?(\.([A-Z]{3}))?$/);
+    if(!fm)
+      add(n,1,U[idx].length||1,"err","Identificador de voo do MVT inválido — <b>XX999/DD[.MATRICULA][.EST]</b> (AHM 780 el. 3–4, ex.: TEF402/27.LNDIG.TRF). A matrícula não leva hífen.",REF.mvt);
+    else{
+      const d=parseInt(fm[2],10);
+      if(d<1||d>31) add(n,f.indexOf("/")+2,2,"err",`Dia <b>${fm[2]}</b> inválido (01–31).`,REF.mvt);
+      if(fm[4]&&/-/.test(fm[4])) add(n,f.indexOf(fm[4])+1,fm[4].length,"err","Matrícula com hífen — o hífen não se transmite (AHM 780 el. 4).",REF.mvt);
+    }
+    idx++;
+  }
+  let inSI=false;
+  for(; idx<scopeEnd; idx++){
+    const line=U[idx].toUpperCase().trimEnd(); const n=idx+1;
+    if(line==="") continue;
+    if(inSI) continue;
+    if(line==="SI"||line.startsWith("SI ")){ inSI=true; continue; }
+    let m;
+    // AD (off-block[/airborne]) [EA hhmm AAA]
+    if((m=line.match(/^AD(\d{4}|\d{6})(\/(\d{4}|\d{6}))?( EA(\d{4}|\d{6}) ([A-Z]{3}))?$/))){
+      [m[1],m[3],m[5]].forEach((t,i)=>{ if(t&&!tOK(t)) add(n,line.indexOf(t)+1,t.length,"err",`Hora <b>${t}</b> inválida (HHMM 24h ou DDHHMM).`,REF.mvt); });
+      continue;
+    }
+    // EA / EB isolados
+    if((m=line.match(/^(EA|EB)(\d{4}|\d{6})( ([A-Z]{3}))?$/))){
+      if(!tOK(m[2])) add(n,3,m[2].length,"err",`Hora <b>${m[2]}</b> inválida.`,REF.mvt);
+      continue;
+    }
+    // AA touchdown/on-block: AA1218/1225 | AA/1225 | AA032355/040005
+    if((m=line.match(/^AA(\d{4}|\d{6})?\/(\d{4}|\d{6})( FLD\d{2})?$/))){
+      [m[1],m[2]].forEach(t=>{ if(t&&!tOK(t)) add(n,line.indexOf(t)+1,t.length,"err",`Hora <b>${t}</b> inválida.`,REF.mvt); });
+      continue;
+    }
+    if(/^AA/.test(line)){ add(n,1,line.length,"err","Elemento AA inválido — <b>AA[touchdown]/onblock</b> (AHM 780 el. 9, ex.: AA1218/1225, AA/1225).",REF.mvt); continue; }
+    // ED / NI — começam SEMPRE com a data (DDHHMM)
+    if((m=line.match(/^(ED|NI)(\d+)$/))){
+      if(!T6.test(m[2])) add(n,3,m[2].length,"err",`<b>${m[1]}${m[2]}</b> inválido — ED/NI começam sempre com a data: DDHHMM (AHM 780).`,REF.mvt);
+      continue;
+    }
+    // RR / FR
+    if((m=line.match(/^(RR|FR)(\d{4}|\d{6})(\/(\d{4}|\d{6}))?$/))){
+      [m[2],m[4]].forEach(t=>{ if(t&&!tOK(t)) add(n,line.indexOf(t)+1,t.length,"err",`Hora <b>${t}</b> inválida.`,REF.mvt); });
+      continue;
+    }
+    // DL / EDL — atrasos: DL72/0120 | DL13/81/0020/0015
+    if((m=line.match(/^(E?DL)([A-Z0-9]{2})(\/([A-Z0-9]{2}))?\/(\d{4})(\/(\d{4}))?$/))){
+      if((m[4]&&!m[7])||(m[7]&&!m[4])) add(n,1,line.length,"err","Nº de códigos de atraso e de durações têm de coincidir — <b>DLcc/hhhh</b> ou <b>DLcc/cc/hhhh/hhhh</b> (AHM 780 el. 7).",REF.mvt);
+      continue;
+    }
+    if(/^E?DL\d/.test(line)===false && /^E?DL/.test(line) && !/^DLA/.test(line)){
+      add(n,1,line.length,"err","Elemento de atraso inválido — <b>DLcc/hhhh</b> ou <b>DLcc/cc/hhhh/hhhh</b> (AHM 780 el. 7).",REF.mvt); continue;
+    }
+    // PX
+    if((m=line.match(/^PX\d{1,3}(\/\d{1,3})*$/))){ continue; }
+    if(/^PX/.test(line)){ add(n,1,line.length,"err","Elemento PX inválido — <b>PXn[/n…]</b> (AHM 780 el. 8, ex.: PX57, PX163/47).",REF.mvt); continue; }
+    // elementos bilaterais conhecidos (DLA…) e restantes
+    add(n,1,line.length,"warn",`Linha <b>${line.slice(0,12)}${line.length>12?"…":""}</b> não é um elemento MVT standard do AHM 780 — pode ser bilateral (ex.: DLA).`,REF.mvt);
+  }
+}
+
+/* ============================ VALIDADOR DIV (AHM 730) ============================ */
+function validateDIV(U,block,scopeEnd,idx,add){
+  if(idx<scopeEnd){
+    const f=U[idx].toUpperCase().trimEnd(); const n=idx+1;
+    if(!/^([A-Z0-9]{2}[A-Z]?\d{1,4}[A-Z]?)\/(\d{2})(\.[A-Z0-9]{2,10})?(\.[A-Z]{3})?$/.test(f))
+      add(n,1,U[idx].length||1,"err","Identificador de voo do DIV inválido — <b>XX999/DD[.MATRICULA][.DESTORIGINAL]</b> (AHM 730, ex.: TEF0981/13.LNDIG.HFT).",REF.mvt);
+    idx++;
+  }
+  let inSI=false;
+  for(; idx<scopeEnd; idx++){
+    const line=U[idx].toUpperCase().trimEnd(); const n=idx+1;
+    if(line==="") continue;
+    if(inSI) continue;
+    if(line==="SI"||line.startsWith("SI ")){ inSI=true; continue; }
+    let m;
+    if((m=line.match(/^EA(\d{4}|\d{6}) ([A-Z]{3})$/))){
+      if(!tOK(m[1])) add(n,3,m[1].length,"err",`Hora <b>${m[1]}</b> inválida.`,REF.mvt);
+      continue;
+    }
+    if(/^EA/.test(line)){ add(n,1,line.length,"err","Elemento EA do DIV inválido — <b>EAhhmm AAA</b> (novo destino), ex.: EA0432 TOS.",REF.mvt); continue; }
+    if((m=line.match(/^([A-Z]{4}) PX(\d{1,3})$/))){ continue; }
+    add(n,1,line.length,"warn","Linha DIV não reconhecida — esperado <b>EAhhmm AAA</b> e <b>REASON PXnnn</b> (ex.: DRWT PX023).",REF.mvt);
+  }
+}
+
+/* ==================== VALIDADOR SSM / ASM (SSIM cap. 2 via Avinor) ==================== */
+const SCHED_REASONS=new Set(["AIRS","ARPT","COMM","CREW","DAMA","EQUI","FUEL","HDLG","HOLI","INDU","OPER","PERF","POLI","POSI","REPO","ROTA","RTNS","RUNW","TECH","WEAT"]);
+const SSM_ACTIONS=new Set(["NEW","CNL","RPL","TIM","FLT","SKD","EQT","ADM","CON"]);
+const ASM_ACTIONS=new Set(["NEW","CNL","RPL","RRT","TIM","RIN","ADM","FLT","CON","EQT"]);
+const RX_FLTDES=/^[A-Z0-9]{2}[A-Z]?\d{1,4}[A-Z]?$/;
+const RX_FLTDT=/^[A-Z0-9]{2}[A-Z]?\d{1,4}[A-Z]?\/\d{2}[A-Z]{3}\d{2}$/;
+const RX_LEG=/^([A-Z]{3})(\d{2})?([01]\d|2[0-3])[0-5]\d(\/[1-9])? ([A-Z]{3})(\d{2})?([01]\d|2[0-3])[0-5]\d(\/[1-9])?$/;
+const RX_EQUIP=/^[A-Z] [A-Z0-9]{3} [A-Z0-9]+(\.[A-Z0-9]+)*( [A-Z][A-Z0-9]{0,2}-?[A-Z0-9]{1,9})?( \d{1,2}\/\S+)*$/;
+const RX_PERIOD=/^(\d{2})([A-Z]{3})(\d{2})?( (\d{2})([A-Z]{3})(\d{2})?)?( ([1-7]{1,7})(\/W[1-9])?)?$/;
+function validateSCHED(kind,U,block,scopeEnd,idx,add){
+  const ACT=(kind==="SSM")?SSM_ACTIONS:ASM_ACTIONS;
+  // time mode opcional
+  if(idx<scopeEnd && /^(UTC|LT)$/.test(U[idx].trim().toUpperCase())) idx++;
+  else if(idx<scopeEnd) add(idx+1,1,U[idx].trim().length||1,"warn","Sem Time Mode (<b>UTC</b> ou <b>LT</b>) a seguir ao identificador — recomendado no SSIM.",REF.ssim);
+
+  let expect="action";
+  for(; idx<scopeEnd; idx++){
+    const line=U[idx].toUpperCase().trimEnd(); const n=idx+1;
+    if(line==="") continue;
+    if(line==="//"){ expect="action"; continue; }
+    if(line==="SI"||line.startsWith("SI ")){ expect="free"; continue; }
+    if(expect==="free") continue;
+
+    if(expect==="action"){
+      const am=line.match(/^([A-Z]{3})( ([A-Z]{4}))?$/);
+      if(!am||!ACT.has(am[1])){
+        add(n,1,line.length,"err",`Action Identifier do ${kind} inválido — esperado ${[...ACT].join(", ")}${kind==="SSM"?"":" (opcionalmente + XASM ou motivo)"} (SSIM cap. 2).`,REF.ssim);
+        expect="flight"; continue;
+      }
+      if(am[3] && am[3]!=="XASM" && !SCHED_REASONS.has(am[3]))
+        add(n,5,am[3].length,"err",`<b>${am[3]}</b> não é XASM nem um Change Reason válido (SSIM 2.6: AIRS, ARPT, COMM, CREW, …, WEAT).`,REF.ssim);
+      expect="flight"; continue;
+    }
+    if(expect==="flight"){
+      if(kind==="SSM"){
+        if(!RX_FLTDES.test(line))
+          add(n,1,line.length,"err","Flight Designator do SSM inválido — <b>XX999[sufixo]</b> (ex.: TEF9999).",REF.ssim);
+        expect="period"; continue;
+      }else{
+        // ASM: FLT/DDMMMYY [DEIs]  (ação FLT: dois pares na mesma linha)
+        const two=line.match(/^(\S+) (\S+)$/);
+        if(two && RX_FLTDT.test(two[1]) && RX_FLTDT.test(two[2])){ expect="body"; continue; }
+        const fdm=line.match(/^(\S+)((?: \d{1,2}\/\S+)*)$/);
+        if(!fdm || !RX_FLTDT.test(fdm[1]))
+          add(n,1,line.length,"err","Flight Identifier do ASM inválido — <b>XX999/DDMMMAA</b> opcionalmente seguido de DEIs (ex.: FZ021/25JUL26 6/FZ022/25).",REF.ssim);
+        else{
+          const dt=fdm[1].match(/\/(\d{2})([A-Z]{3})(\d{2})$/);
+          if(dt){
+            const dd=parseInt(dt[1],10);
+            if(dd<1||dd>31) add(n,line.indexOf("/")+2,2,"err",`Dia <b>${dt[1]}</b> inválido (01–31).`,REF.ssim);
+            if(!RULES.months.includes(dt[2])) add(n,line.indexOf("/")+4,3,"err",`Mês <b>${dt[2]}</b> inválido — usar JAN…DEC.`,REF.ssim);
+          }
+        }
+        expect="body"; continue;
+      }
+    }
+    if(expect==="period"){
+      const pm=line.match(RX_PERIOD);
+      if(pm){
+        if(!RULES.months.includes(pm[2])) add(n,3,3,"err",`Mês <b>${pm[2]}</b> inválido.`,REF.ssim);
+        if(pm[6]&&!RULES.months.includes(pm[6])) add(n,line.indexOf(pm[6]),3,"err",`Mês <b>${pm[6]}</b> inválido.`,REF.ssim);
+        if(pm[9]){
+          const days=pm[9];
+          for(let i=1;i<days.length;i++) if(days[i]<=days[i-1]){
+            add(n,line.indexOf(days)+1,days.length,"err",`Dias de operação <b>${days}</b> — dígitos 1–7 por ordem crescente, sem repetição (SSIM).`,REF.ssim);
+            break;
+          }
+        }
+        expect="body"; continue;
+      }
+      // ação FLT do SSM: depois do período vem novo designator — cai no body
+      add(n,1,line.length,"err","Período/frequência inválido — <b>DDMMM[AA] [DDMMM[AA]] [dias][/Wn]</b> (ex.: 04APR24 03MAY24 1234567).",REF.ssim);
+      expect="body"; continue;
+    }
+    // body: equipamento, legs, DEI/rotas, designator novo (FLT)
+    if(RX_LEG.test(line)) continue;
+    if(RX_EQUIP.test(line)) continue;
+    if(RX_FLTDES.test(line)) continue;                      // novo designator (FLT)
+    if(RX_PERIOD.test(line)) continue;                      // período extra (TIM/FLT em SSM)
+    if(/^[A-Z]{6} .+$/.test(line)) continue;                // rota + DEI (OSLKKN 10/XY1234/YX432)
+    if(/^ANA\/\d+$/.test(line)) continue;
+    add(n,1,line.length,"err",`Linha ${kind} não reconhecida — esperado leg (<b>OSL1455 KKN1550</b>), equipamento (<b>J 738 C16M165VV738B</b>), rota+DEI ou //.`,REF.ssim);
+  }
+}
+
+/* Diagnóstico: se o elemento fica válido depois de normalizar espaços,
+   o problema é espaçamento — apontar o sítio exato em vez de erro genérico */
+function spacingDiag(f,rx,n,add,ref,label){
+  const norm=f.replace(/ {2,}/g," ").replace(/ +$/,"").replace(/^ +/,"");
+  if(!rx.test(norm)) return false;
+  const ms=f.match(/ {2,}/);
+  if(ms){ add(n,ms.index+1,ms[0].length,"err",`${ms[0].length} espaços consecutivos no ${label} — o separador é um único espaço.`,ref); return true; }
+  const tr=f.match(/ +$/);
+  if(tr){ add(n,tr.index+1,tr[0].length,"err",`Espaço(s) a mais no fim do ${label}.`,ref); return true; }
+  const ld=f.match(/^ +/);
+  if(ld){ add(n,1,ld[0].length,"err",`Espaço(s) antes do ${label}.`,ref); return true; }
+  return false;
+}
+
+/* ============================ VALIDADOR PIL ============================
+   RP 1716 — PIL não tem Address/Comms; começa em PIL (ou identificador extenso).
+   Flight Element: XX999/DDMMM AAA [PARTnn] — PARTnn só quando enviado em partes */
+function validatePIL(U,block,scopeEnd,idx,add,shared,isLastBlock){
+  let declaredPart=null, partRec=null;
+  if(idx<scopeEnd){
+    const f=U[idx].toUpperCase().trimEnd(); const n=idx+1;
+    const RXF=/^([A-Z0-9]{2}[A-Z]?)(\d{1,4})([A-Z])?\/(\d{2})([A-Z]{3}) ([A-Z]{3})( PART\s*(\d{1,2}))?$/;
+    const fm=f.match(RXF);
+    if(!fm){
+      if(!spacingDiag(f,RXF,n,add,REF.flight,"Flight Element"))
+        add(n,1,U[idx].length||1,"err","Flight Element do PIL inválido — <b>XX999/DDMMM AAA</b> ou <b>XX999/DDMMM AAA PARTn</b> quando em partes (RP 1716 §2.2).",REF.flight);
+    }else{
+      const day=parseInt(fm[4],10);
+      if(day<1||day>31) add(n,f.indexOf("/")+2,2,"err",`Dia <b>${fm[4]}</b> inválido (01–31).`,REF.flight);
+      if(!RULES.months.includes(fm[5])) add(n,f.indexOf("/")+4,3,"err",`Mês <b>${fm[5]}</b> inválido — usar JAN…DEC.`,REF.flight);
+      if(fm[8]){ declaredPart=parseInt(fm[8],10); partRec={num:declaredPart,line:n,key:fm[1]+fm[2]+(fm[3]||"")+"/"+fm[4]+fm[5]}; shared.parts.push(partRec); }
+    }
+    idx++;
+  }
+  let sawEnd=false, inCompartment=false, curSeats=new Set(), lastSeat=null, lastComp=null;
+  for(; idx<scopeEnd; idx++){
+    const rawLine=U[idx]; const line=rawLine.toUpperCase().trimEnd(); const n=idx+1;
+    if(line==="") continue;
+    let m;
+    if((m=line.match(/^END(PIL|PART\s*(\d{1,2}))$/))){
+      sawEnd=true;
+      if(m[1].startsWith("PART")){
+        const p=parseInt(m[2],10);
+        if(declaredPart!==null&&p!==declaredPart)
+          add(n,4,line.length-3,"err",`<b>${line}</b> não coincide com o cabeçalho desta parte (PART${declaredPart}).`,REF.end);
+      }else if(partRec){ partRec.final=true; }
+      continue;
+    }
+    if(sawEnd){ add(n,1,line.length,"warn","Conteúdo depois do End Element.",REF.end); continue; }
+    // Cabeçalho de compartimento: FCLASS (colado, RP1716 §2.3) ou F CLASS
+    if((m=line.match(/^([A-Z]) ?CLASS$/))){
+      const comp=m[1];
+      const RANK={P:1,F:1,A:1,J:2,C:2,D:2,I:2,Z:2,W:3,Y:4};
+      if(lastComp && (RANK[comp]!==undefined) && (RANK[lastComp]!==undefined) && RANK[comp]<RANK[lastComp])
+        add(n,1,line.length,"warn",`Compartimento <b>${comp}</b> depois de <b>${lastComp}</b> — os compartimentos listam-se por ordem descendente da cabine (F→C→Y, RP 1716 §2.4 Nota 3).`,REF.elem);
+      lastComp=comp; inCompartment=true; curSeats=new Set(); lastSeat=null;
+      continue;
+    }
+    if(line==="NIL"){
+      if(!inCompartment) add(n,1,3,"err","NIL fora de um cabeçalho de compartimento (RP 1716 §2.4 Nota 2).",REF.elem);
+      continue;
+    }
+    // Linha de continuação: indentação de 8 espaços (RP 1716 §2.4 Nota 4)
+    if(/^ {8}\S/.test(rawLine)) continue;
+    if(!inCompartment){
+      add(n,1,line.length,"err","Linha de passageiro sem cabeçalho de compartimento antes (ex.: FCLASS, YCLASS).",REF.elem);
+      continue;
+    }
+    // Passageiro: seat [dest] [NOME/PROPRIO...] [texto livre]; seat sozinho = lugar vago
+    const pm=line.match(/^(\d{1,3}[A-Z]{1,2})( ([A-Z]{3}))?( ([A-Z]+\/[A-Z]+(\/[A-Z]+)*))?( .+)?$/);
+    if(!pm){
+      add(n,1,line.length,"err","Linha de passageiro do PIL malformada — <b>seat [dest] [APELIDO/NOME] [SSR/texto]</b> (RP 1716 §2.4, ex.: 17D BKK BROWN/JOHN WCHC OWN).",REF.elem);
+      continue;
+    }
+    const seat=pm[1];
+    const seatNum=parseInt(seat.match(/^\d+/)[0],10);
+    if(lastSeat!==null && seatNum<lastSeat)
+      add(n,1,seat.length,"warn",`Lugar <b>${seat}</b> fora da ordem ascendente por número de assento (RP 1716 §2.4).`,REF.elem);
+    lastSeat=seatNum;
+    if(curSeats.has(seat))
+      add(n,1,seat.length,"err",`Lugar <b>${seat}</b> duplicado neste compartimento.`,REF.elem);
+    curSeats.add(seat);
+    // nome com número antes do apelido é proibido no PIL
+    if(pm[4]===undefined && pm[7]===undefined && pm[2]===undefined){/* lugar vago */}
+    if(/ \d+[A-Z]+\//.test(line))
+      add(n,1,line.length,"err","No PIL o nome NÃO leva número antes do apelido (RP 1716 §2.4: BROWN/JOHN, não 1BROWN/JOHN).",REF.name);
+  }
+  if(!sawEnd) add(scopeEnd,1,1,"err","Falta ENDPIL / ENDPARTn (RP 1716 §2.5).",REF.end);
+}
+
+/* ============================ VALIDADOR PTM ============================
+   RP 1718 — Flight Element com par de estações: XX999/DDMMM AAABBB PARTn */
+function validatePTM(U,block,scopeEnd,idx,add,shared,isLastBlock){
+  let declaredPart=null, partRec=null;
+  if(idx<scopeEnd){
+    const f=U[idx].toUpperCase().trimEnd(); const n=idx+1;
+    const RXF=/^([A-Z0-9]{2}[A-Z]?)(\d{1,4})([A-Z])?\/(\d{2})([A-Z]{3}) ([A-Z]{3})([A-Z]{3}) PART\s*(\d{1,2})$/;
+    const fm=f.match(RXF);
+    if(!fm){
+      if(!spacingDiag(f,RXF,n,add,REF.flight,"Flight Element"))
+        add(n,1,U[idx].length||1,"err","Flight Element do PTM inválido — <b>XX999/DDMMM AAABBB PARTn</b> (par origem+destino colado, RP 1718 §2.4, ex.: SK347/24NOV ARNJFK PART1).",REF.flight);
+    }else{
+      const day=parseInt(fm[4],10);
+      if(day<1||day>31) add(n,f.indexOf("/")+2,2,"err",`Dia <b>${fm[4]}</b> inválido (01–31).`,REF.flight);
+      if(!RULES.months.includes(fm[5])) add(n,f.indexOf("/")+4,3,"err",`Mês <b>${fm[5]}</b> inválido — usar JAN…DEC.`,REF.flight);
+      declaredPart=parseInt(fm[8],10);
+      partRec={num:declaredPart,line:n,key:fm[1]+fm[2]+(fm[3]||"")+"/"+fm[4]+fm[5]};
+      shared.parts.push(partRec);
+    }
+    idx++;
+  }
+  let sawEnd=false, sawNil=false, sawEntry=false;
+  for(; idx<scopeEnd; idx++){
+    const rawLine=U[idx]; const line=rawLine.toUpperCase().trimEnd(); const n=idx+1;
+    if(line==="") continue;
+    let m;
+    if((m=line.match(/^END(PTM|PART\s*(\d{1,2}))$/))){
+      sawEnd=true;
+      if(m[1].startsWith("PART")){
+        const p=parseInt(m[2],10);
+        if(declaredPart!==null&&p!==declaredPart)
+          add(n,4,line.length-3,"err",`<b>${line}</b> não coincide com o cabeçalho desta parte (PART${declaredPart}).`,REF.end);
+      }else if(partRec){ partRec.final=true; }
+      continue;
+    }
+    if(sawEnd){ add(n,1,line.length,"warn","Conteúdo depois do End Element.",REF.end); continue; }
+    if(line==="NIL"){ sawNil=true; continue; }
+    if(line==="SI"){ sawEntry=true; continue; }
+    // Entrada: FLT[suf][/DD][/S|N] DEST[/S|N] nC nB[peso K|L] [NOME/PROPRIO...] [.CHDn][.INFn][.RQ|.SA]
+    const em=line.match(/^([A-Z0-9]{2}[A-Z]?\d{1,4})([A-Z])?(\/(\d{2}))?(\/([SN]))? ([A-Z]{3})(\/([SN]))? (\d{1,3})([A-Z]) (\d{1,3})B(\d{1,4}[KL])?((\.(CHD|INF)\d{1,2}|\.(RQ|SA))*)( [A-Z]+(\/[A-Z]+)+((\.(CHD|INF)\d{1,2}|\.(RQ|SA))*))?$/);
+    if(!em){
+      add(n,1,line.length,"err","Entrada PTM inválida — <b>VOO[/DD][/S|N] DEST nX nB[peso K|L] [APELIDO/NOME] [.CHDn][.INFn][.RQ|.SA]</b> (RP 1718 §2.5–2.7).",REF.elem);
+      continue;
+    }
+    sawEntry=true;
+    if(em[4] && (parseInt(em[4],10)<1||parseInt(em[4],10)>31))
+      add(n,line.indexOf("/"+em[4])+2,2,"err",`Dia <b>${em[4]}</b> da ligação inválido (01–31).`,REF.elem);
+  }
+  if(!sawEnd) add(scopeEnd,1,1,"err","Falta ENDPTM / ENDPARTn (RP 1718 §2.8).",REF.end);
+  if(!sawEntry && !sawNil)
+    add(block.start+1,1,3,"warn","PTM sem entradas de transferência nem <b>NIL</b> — sem transferências, o corpo é uma única linha NIL (RP 1718 §2.4 Nota).",REF.elem);
+}
+
+/* ---- validação dos elementos .X/ numa linha (inline ou isolados) ---- */
+/* Construções da RP1707b Secção 3; códigos da RP1708 §2.12.7/§2.12.8 + AIRIMP §2.11.6.7 */
+const RX={
+  fltinfo:/^([A-Z0-9]{2}[A-Z]?\d{1,4}[A-Z]?)([A-Z])(\d{2})([A-Z]{3})([A-Z]{3})?(\d{4})?([+-][12])?([A-Z]{2})?$/, // .I/ .O/
+  mkt:/^([A-Z0-9]{2}[A-Z]?\d{1,4}[A-Z]?)([A-Z])(\d{2})([A-Z]{3})([A-Z]{3})(\d{4})?([A-Z]{2})?$/,               // .M/
+  pnr:/^[A-Z0-9]{5,8}(\/[A-Z0-9]{2,3})?$/,                                                                      // .L/
+  prio:/^[A-Z0-9]{1,8}(-\d{2}[A-Z]{3}\d{2})?$/,                                                                 // .DG .ID .RG
+  fqt:/^[A-Z0-9]{2} [A-Z0-9]{1,20}$/,                                                                           // .F/
+  bagN:/^\d{10}\d{3}\/[A-Z]{3}$/, bagA:/^[A-Z0-9]{2,15}\/\d{1,3}\/[A-Z]{3}$/,                                   // .N/
+  dbc:/^(V|I)(\/.+)?$/,                                                                                          // .DBC/
+  bg:/^\d{3}$/,                                                                                                  // .BG/
+  wl:/^[A-Z0-9]{1,8}$/,                                                                                          // .WL/
+  sec:/^[A-Z]{2}(\/|$)/,                                                                                         // .S/ começa por país ISO
+  date:/^\d{2}(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\d{2}$/,
+  seatTok:/^(\d{1,3}[A-Z]{1,7}|\d{1,3}[A-Z]?-\d{1,3}[A-Z](-[A-Z])?|\d{1,3}[A-Z]-[A-Z]|\d{1,3}ROW|ALL|REST|NIL)$/,
+  status:/^([A-Z]{2})(\d{1,3})$/
+};
+const PAXID=/-\d{0,2}[A-Z]+(\/[A-Z]+)*\s*$/; // associação -1NOME/APELIDO no fim
+
+function stripPax(s){ return s.replace(PAXID,"").replace(/\s+$/,""); }
+
+function validateDotElements(rawLine, n, fromIdx, add, opts){
+  const line = rawLine.toUpperCase().replace(/\s+$/,"");
+  // apanhar QUALQUER .XXX (com ou sem barra) — a validação decide depois
+  const re=/\.(RN|RG1|RG2|ID1|ID2|DG1|DG2|DBC|BG|SN|WL|O[2-9]?|[A-Z])(\/)?/g;
+  re.lastIndex = fromIdx;
+  const hits=[];
+  let m;
+  while((m=re.exec(line))!==null){
+    // "posição de elemento": início de linha ou precedido de espaço.
+    // Um ponto colado a texto (ex.: free text ".TRUNKS") não é elemento.
+    const atStart = m.index===0 || m.index===fromIdx;
+    const prevCh  = m.index>0 ? line[m.index-1] : " ";
+    const spaced  = atStart || prevCh===" ";
+    if(!m[2]){
+      // elemento sem a barra obrigatória (ex.: .WLSAL, .RSEAT, .ID2N2)
+      // — só se estiver em posição de elemento; caso contrário é free text
+      if(spaced)
+        add(n,m.index+1,m[0].length,"err",`Elemento <b>.${m[1]}</b> sem a barra obrigatória — a construção é <b>.${m[1]}/valor</b> (RP 1707b Sec.3).`,REF.elem);
+      continue;
+    }
+    // elemento colado ao anterior, sem o espaço separador
+    if(!spaced) hits.push({tag:m[1], idx:m.index, len:m[0].length, glued:true});
+    else hits.push({tag:m[1], idx:m.index, len:m[0].length});
+  }
+  // reportar elementos não separados por espaço
+  hits.forEach((h,k)=>{
+    if(!h.glued) return;
+    const prev = k>0 ? "."+hits[k-1].tag+"/" : "o elemento anterior";
+    add(n,h.idx+1,1,"err",`Falta um espaço entre <b>${prev}</b> e <b>.${h.tag}/</b> — os elementos são sempre separados por um espaço (RP 1707b Sec.2/3).`,REF.elem);
+  });
+  let lCount=0, lNoDesignator=0, lFirstCol=0;
+
+  hits.forEach((h,k)=>{
+    const col=h.idx+1;
+    const start=h.idx+h.len;
+    const endIdx=(k+1<hits.length)?hits[k+1].idx:line.length;
+    let content=line.slice(start,endIdx).replace(/\s+$/,"");
+    const tag=h.tag;
+
+    const bad=(len,msg,ref)=>add(n,start+1,Math.max(len,1),"err",msg,ref||REF.elem);
+
+    if(RULES.dotNotInUse.has("."+tag)){
+      add(n,col,h.len,"warn",`Elemento <b>.${tag}/</b> não está em uso no standard (RP1707b Sec.3) — pode ser utilização bilateral; confirmar com o recetor.`,REF.elem,{tag:"elemunk",code:"."+tag+"/"});
+      return;
+    }
+
+    switch(true){
+      case tag==="R": validateRemark(content,n,start,add,opts&&opts.elemCount,opts&&opts.msgType); break;
+      case tag==="RN": checkHyphens(content,n,start,add,null); break; // continuação: texto livre
+      case tag==="SN": break; // continuação de .S/
+      case tag==="L": {
+        lCount++; if(lCount===1) lFirstCol=col;
+        const c=stripPax(content);
+        if(!RX.pnr.test(c)) bad(content.length,"Elemento .L/ (PNR address) malformado — 5–8 alfanuméricos, opcionalmente /XX(X) da companhia (ex.: .L/ABC123/JD).");
+        else if(!/\//.test(c)) lNoDesignator++;
+        break;
+      }
+      case tag==="I": {
+        const c=stripPax(content);
+        if(!RX.fltinfo.test(c)) bad(content.length,"Inbound Connection .I/ malformado — voo+classe+dia+aeroporto[+aeroporto][+hora][+var.data][+status] (ex.: .I/SR559F07MUC, .I/NZ040X27AKL0651-1HK).");
+        break;
+      }
+      case /^O[2-9]?$/.test(tag): {
+        const c=stripPax(content);
+        if(!RX.fltinfo.test(c)) bad(content.length,`Onward Connection .${tag}/ malformado — voo+classe+dia[+embarque]+destino[+hora][+status] (ex.: .O/BA012C26LHR1500HK).`);
+        break;
+      }
+      case tag==="M": {
+        const c=stripPax(content);
+        if(!RX.mkt.test(c)) bad(content.length,"Marketing Flight .M/ malformado — voo+classe+dia+origem+destino[+hora][+status] (ex.: .M/UA3517F16FRAJFK1000HK).");
+        break;
+      }
+      case tag==="F": {
+        if(!RX.fqt.test(stripPax(content))) bad(content.length,"Frequent Traveller .F/ malformado — companhia (2 car.) + espaço + nº de conta (ex.: .F/KL 123456789).");
+        break;
+      }
+      case tag==="N": {
+        const c=stripPax(content);
+        if(!RX.bagN.test(c) && !RX.bagA.test(c)) bad(content.length,"Baggage Tag .N/ malformado — numérico: 10 dígitos+3 dígitos/DES (ex.: .N/0074123456005/SFO) ou alfanumérico: TAG/n/DES (ex.: .N/KL123456/5/SFO).");
+        break;
+      }
+      case tag==="BG": {
+        if(!RX.bg.test(stripPax(content))) bad(content.length,"Baggage Pooling .BG/ malformado — número de referência de 3 dígitos (ex.: .BG/001).");
+        break;
+      }
+      case tag==="DBC": {
+        if(!RX.dbc.test(stripPax(content))) bad(content.length,"Denied Boarding Compensation .DBC/ malformado — V ou I, opcionalmente /texto (ex.: .DBC/V/USD200 PAID IN CASH).");
+        break;
+      }
+      case /^(DG1|DG2|ID1|ID2|RG1|RG2)$/.test(tag): {
+        if(!RX.prio.test(stripPax(content))) bad(content.length,`Elemento .${tag}/ malformado — código de prioridade, opcionalmente -data de antiguidade (ex.: .${tag}/PSN49-08AUG91).`);
+        else{
+          const d=stripPax(content).match(/-(\d{2}[A-Z]{3}\d{2})$/);
+          if(d && !RX.date.test(d[1])) add(n,start+1+stripPax(content).indexOf(d[1]),d[1].length,"err",`Data de antiguidade <b>${d[1]}</b> inválida — formato DDMMMAA.`,REF.elem);
+        }
+        break;
+      }
+      case tag==="W": {
+        const c=stripPax(content);
+        if(!/^(P\/\d{1,3}|[KL]\/\d{1,3}\/\d{1,4})$/.test(c))
+          bad(content.length,"Pieces/Weight .W/ malformado — <b>.W/P/n</b> (peças) ou <b>.W/K|L/peças/peso</b> (ex.: .W/K/2/20), RP 1707b.");
+        break;
+      }
+      case tag==="WL": {
+        if(!RX.wl.test(stripPax(content))) bad(content.length,"Wait List .WL/ malformado (ex.: .WL/AB84).");
+        break;
+      }
+      case tag==="C": case tag==="D": {
+        if(!stripPax(content).length) bad(1,`Elemento .${tag}/ sem conteúdo.`);
+        break;
+      }
+      case tag==="S": {
+        const c=stripPax(content);
+        if(!RX.sec.test(c)) bad(content.length,"Security Information .S/ malformado — começa pelo código ISO do país (2 letras), campos separados por / (ex.: .S/US/8972657824).");
+        /* oblíquas finais vazias aceites — surgem nos exemplos oficiais (.S/US/123454321///, RP1719b) */
+        break;
+      }
+      case tag==="T": add(n,col,h.len,"warn","Elemento .T/ está reservado (electronic ticketing) — não deve ser usado.",REF.elem); break;
+      default:
+        add(n,col,h.len,"warn",`Elemento <b>.${tag}/</b> desconhecido — não consta da RP1707b Sec.3; pode ser bilateral, confirmar com o recetor.`,REF.elem,{tag:"elemunk",code:"."+tag+"/"});
+    }
+  });
+
+  // múltiplos .L/ no mesmo passageiro exigem designador de companhia em todos
+  if(lCount>1 && lNoDesignator>0)
+    add(n,lFirstCol,3,"err","Vários elementos .L/ no mesmo passageiro — o designador de companhia (/XX) é obrigatório em todos (RP1707b §3.18).",REF.elem);
+}
+
+/* Hífens no conteúdo de .R//.RN/: o hífen está reservado para a associação
+   a passageiro no FIM do elemento (RP1707b §3.24/§3.37). Qualquer outro hífen
+   no free text pode ser interpretado pelo sistema recetor como início da
+   identificação de passageiro. Exceção: intervalos de lugares (§2.22) nos
+   SSR de lugar (21A-C, 21-24A-D…). */
+const SEAT_SSRS=["SEAT","RQST","NSST","NSSA","NSSB","NSSW","GPST","SMST","SMSA","SMSB","SMSW","SMSR","NSSR"];
+function checkHyphens(content,n,start,add,code){
+  // associação a passageiro válida no fim do elemento
+  const pax=content.match(PAXID);
+  const paxIdx=pax?content.length-pax[0].length:-1;
+  const seatOk=code&&SEAT_SSRS.includes(code);
+  for(let i=0;i<content.length;i++){
+    if(content[i]!=="-") continue;
+    if(i===paxIdx) continue; // início da associação a passageiro
+    if(i>paxIdx&&paxIdx>=0) continue; // dentro da associação
+    if(seatOk){
+      // hífen dentro de um token de lugares válido (ex.: 21A-C)?
+      const ts=content.lastIndexOf(" ",i)+1;
+      let te=content.indexOf(" ",i); if(te<0)te=content.length;
+      if(RX.seatTok.test(content.slice(ts,te))) continue;
+    }
+    add(n,start+1+i,1,"err","Hífen no free text do Remarks Element — o hífen está reservado para a associação a passageiro no fim do elemento (ex.: -1SILVA/JOAOMR) e pode ser mal interpretado pelo sistema recetor. Reformular o texto sem hífen.",REF.remarks);
+  }
+}
+
+/* .R/ Remarks (RP1707b §3.24 + RP1708 §2.12) */
+function validateRemark(content,n,start,add,elemCount,msgType){
+  const mm=content.match(/^(\d{1,2})?([A-Z]+)/);
+  if(!mm){
+    add(n,start+1,Math.max(content.length,1),"err","Remarks Element .R/ sem código — esperado código SSR/OSI (ex.: VGML, WCHR, VIP).",REF.remarks);
+    return;
+  }
+  const cntLen=(mm[1]||"").length;
+  const letters=mm[2];
+  let code=null, attached=false, statusEnd=0;
+  if(letters.length===6 && RULES.pnlCodes.has(letters.slice(0,4)) &&
+     RULES.statusCodes.has(letters.slice(4,6)) && /^\d/.test(content.slice(cntLen+6))){
+    code=letters.slice(0,4); attached=true;
+    const cm=content.slice(cntLen+6).match(/^\d{1,3}/);
+    statusEnd=cntLen+6+cm[0].length;
+  }else{
+    code=letters;
+    statusEnd=cntLen+code.length;
+  }
+  const codeCol=start+1+cntLen;
+  const isOsi=RULES.osiCodes.has(code);
+  if(!RULES.pnlCodes.has(code) && !isOsi){
+    let hint="";
+    if(code==="TOP") hint=" No standard, o tour operator indica-se no elemento <b>.D/</b> (ex.: .D/AIR2000).";
+    if(code==="CHD") hint=" O código CHD foi descontinuado (31MAY08) — usar SSR <b>CHLD</b>.";
+    add(n,codeCol,code.length,"warn",`<b>${code}</b> não consta da RP1708 §2.12.7/§2.12.8 nem da matriz AIRIMP §2.11.6.7 — pode ser código bilateral; confirmar com o recetor.${hint}`,REF.ssr,{tag:"ssrunk",code});
+  }
+  if(code==="CHD" )
+    add(n,codeCol,code.length,"warn","Código OSI <b>CHD</b> descontinuado desde 31MAY08 — usar SSR <b>CHLD</b>.",REF.ssr);
+  if(cntLen && !isOsi && code!=="CHD")
+    add(n,start+1,cntLen,"err",`Contagem antes do código só é permitida em códigos OSI (ex.: 2VIP) — <b>${mm[1]}${code}</b> não é válido.`,REF.remarks);
+
+  // status/action code — exceto FQT*: o free text começa pela companhia (ex.: KL), nunca é status
+  let free="";
+  let hasStatus=attached;
+  const noStatus=/^FQT[VRSU]$/.test(code);
+  if(noStatus){
+    free=content.slice(statusEnd).replace(/^ +/,"");
+  }else if(!attached){
+    let after=content.slice(statusEnd);
+    const hadSpace=/^ /.test(after);
+    after=after.replace(/^ +/,"");
+    const st=after.match(/^([A-Z]{1,2})(\d{1,3})?(?=[ \/\-]|$)/);
+    let consumed=0;
+    if(st){
+      const L=st[1], D=st[2];
+      const looksStatus=(D!==undefined && L.length<=2)||RULES.statusCodes.has(L);
+      if(looksStatus){
+        const stCol=start+1+statusEnd+(hadSpace?1:0);
+        if(!RULES.statusCodes.has(L))
+          add(n,stCol,L.length+(D||"").length,"err",`Status/action code <b>${L}${D||""}</b> inválido — esperado 2 letras (HK, KK, NN, UN, NO, XX…) + contagem (ex.: HK1).`,REF.status);
+        else if(D===undefined)
+          add(n,stCol,L.length,"err",`Status <b>${L}</b> sem contagem de lugares — esperado ex.: <b>${L}1</b>.`,REF.status);
+        else hasStatus=true;
+        consumed=st[0].length;
+      }
+    }
+    free=after.slice(consumed).replace(/^ +/,"");
+  }else{
+    free=content.slice(statusEnd).replace(/^ +/,"");
+  }
+  // hífen no free text: reservado para associação a passageiro (-1NOME/APELIDO)
+  checkHyphens(content,n,start,add,code);
+  free=stripPax(free);
+
+  // ambiguidade: elemento com vários passageiros, remark para menos, sem associação
+  if(elemCount>1){
+    const hasPax=PAXID.test(content);
+    const stC=(function(){ const s=content.match(/\b[A-Z]{2}(\d{1,3})(?=[ \/\-]|$)/); return s?parseInt(s[1],10):null; })();
+    if(!hasPax && stC!==null && stC<elemCount)
+      add(n,start+1,content.length,"warn",`Remark para ${stC} passageiro(s) num elemento com ${elemCount} — sem associação (<b>-1APELIDO/NOME</b>) o sistema recetor não sabe a quem pertence (RP 1707b §3.24/§3.37).`,REF.remarks);
+  }
+
+  // status obrigatório: em PNL/ADL todos os SSR levam status+contagem (regra operacional);
+  // exceções: códigos OSI (VIP…), FQT* (o texto começa pela companhia) e códigos desconhecidos (já erraram)
+  const pnladl=(msgType==="PNL"||msgType==="ADL");
+  if(!hasStatus && !noStatus && !isOsi){
+    if((pnladl && RULES.pnlCodes.has(code)) || RULES.statusRequired.has(code))
+      add(n,codeCol,code.length,"err",`SSR <b>${code}</b> sem status/action code — no PNL/ADL cada SSR leva status+contagem (ex.: ${code} HK1).`,REF.status);
+  }
+
+  // validação do free text de SSRs estruturados
+  if(["SEAT","RQST","NSST","NSSA","NSSB","NSSW","GPST","SMST","SMSA","SMSB","SMSW"].includes(code) && free){
+    free.split(/ +/).forEach(tok=>{
+      if(!RX.seatTok.test(tok)){
+        const p=content.indexOf(tok);
+        add(n,start+1+(p>=0?p:0),tok.length,"err",`Indicação de lugar <b>${tok}</b> inválida — formatos: 4C, 20AC, 21A-C, 21-23A, 25ROW, ALL, REST, NIL (RP1707b §2.22).`,REF.remarks);
+      }
+    });
+  }
+  if(code==="TKNE" && free){
+    if(!/^(INF)?\d{13,14}(\/\d{1,4})?$/.test(free)){
+      const p=content.indexOf(free);
+      add(n,start+1+(p>=0?p:0),free.length,"err",`TKNE com bilhete <b>${free}</b> inválido — nº de bilhete (13–14 dígitos) opcionalmente /cupão (ex.: 0122106026463/2).`,REF.remarks);
+    }
+  }
+  if(code==="DOCS" && free){
+    if(!/^\//.test(free))
+      add(n,start+1+content.indexOf(free),free.length,"err","DOCS malformado — os campos do documento começam por / a seguir ao status (ex.: /P/CA/939822373/…).",REF.remarks);
+    else{
+      const f=free.split("/");
+      // Ordem oficial (AIRIMP §3.13.2 — Construction Rules and Sequence of Components):
+      // [1]=tipo [2]=país emissor [3]=nº documento [4]=nacionalidade [5]=nascimento
+      // [6]=género [7]=validade [8..]=apelido / nome(s)
+      const base=start+1+content.indexOf(free);
+      const posOf=i=>{ let p=0; for(let k=0;k<i;k++) p+=f[k].length+1; return p; };
+      const isCountry=x=>/^[A-Z]{2,3}$/.test(x);
+      const isDocNum =x=>/[0-9]/.test(x) && /^[A-Z0-9<]{4,15}$/.test(x);
+      const isDate   =x=>RX.date.test(x);
+
+      if(f[1] && !/^(P|I|A|C|F|V|D|AC|IP)$/.test(f[1]))
+        add(n,base+posOf(1),f[1].length,"err",`DOCS: tipo de documento <b>${f[1]}</b> inválido (P, I, A, C, F, V, D, AC).`,REF.remarks);
+
+      // [2] país emissor — se parecer o número do documento, os campos estão trocados
+      if(f[2]!==undefined && f[2]!==""){
+        if(!isCountry(f[2])){
+          if(isDocNum(f[2]) && f[3] && isCountry(f[3]))
+            add(n,base+posOf(2),f[2].length,"err",`DOCS: campos fora de ordem — <b>${f[2]}</b> parece o nº do documento, mas a posição 2 é o <b>país emissor</b>. Ordem: /tipo/<b>país-emissor</b>/nº/nacionalidade/nascimento/género/validade/apelido/nome (AIRIMP §3.13.2).`,REF.remarks);
+          else
+            add(n,base+posOf(2),f[2].length,"err",`DOCS: país emissor <b>${f[2]}</b> inválido — código ISO de 2–3 letras (AIRIMP §3.13.2).`,REF.remarks);
+        }
+      }
+      // [3] número do documento
+      if(f[3]!==undefined && f[3]!=="" && !/^[A-Z0-9<]{1,15}$/.test(f[3]))
+        add(n,base+posOf(3),f[3].length,"err",`DOCS: nº do documento <b>${f[3]}</b> inválido — até 15 caracteres alfanuméricos.`,REF.remarks);
+      // [4] nacionalidade
+      if(f[4]!==undefined && f[4]!=="" && !isCountry(f[4]))
+        add(n,base+posOf(4),f[4].length,"err",`DOCS: nacionalidade <b>${f[4]}</b> inválida — código ISO de 2–3 letras (posição 4).`,REF.remarks);
+      // [5] data de nascimento
+      if(f[5]!==undefined && f[5]!=="" && !isDate(f[5]))
+        add(n,base+posOf(5),f[5].length,"err",`DOCS: data de nascimento <b>${f[5]}</b> inválida — formato DDMMMAA (posição 5).`,REF.remarks);
+      // [6] género
+      if(f[6]!==undefined && f[6]!=="" && !/^(M|F|MI|FI|U|X)$/.test(f[6]))
+        add(n,base+posOf(6),f[6].length,"err",`DOCS: género <b>${f[6]}</b> inválido — M, F, MI, FI, U ou X (posição 6).`,REF.remarks);
+      // [7] validade
+      if(f[7]!==undefined && f[7]!=="" && !isDate(f[7]))
+        add(n,base+posOf(7),f[7].length,"err",`DOCS: validade do documento <b>${f[7]}</b> inválida — formato DDMMMAA (posição 7).`,REF.remarks);
+    }
+  }
+  if(code==="DOCA" && free){
+    if(!/^\/(R|D)(\/|$)/.test(free))
+      add(n,start+1+content.indexOf(free),free.length,"err","DOCA malformado — primeiro campo é R (residência) ou D (destino): /R/US/1600 SMITH STREET/… (RP1707b).",REF.remarks);
+  }
+  if(code==="FQTV"||code==="FQTR"||code==="FQTS"||code==="FQTU"){
+    if(free && !/^[A-Z0-9]{2} ?[A-Z0-9]{1,20}$/.test(free))
+      add(n,start+1+content.indexOf(free),free.length,"err",`${code} malformado — companhia (2 car.) + nº de conta (ex.: FQTV AI 43211).`,REF.remarks);
+  }
+}
+
+/* ============================ INTERFACE ============================ */
+const $=id=>document.getElementById(id);
+const sevLabel={err:"ERRO",warn:"AVISO",info:"INFO"};
+
+function run(){
+  const raw=$("input").value;
+  if(!raw.trim()){ $("findings").innerHTML='<div class="empty">A mensagem está vazia.</div>'; $("summary").hidden=true; renderTelex(raw,[]); return; }
+  const f=validate(raw);
+  renderSummary(f); renderFindings(f); renderTelex(raw,f);
+}
+
+function renderSummary(f){
+  f=f.filter(x=>!x.dup);
+  const e=f.filter(x=>x.sev==="err").length, w=f.filter(x=>x.sev==="warn").length, i=f.filter(x=>x.sev==="info").length;
+  const s=$("summary"); s.hidden=false;
+  s.innerHTML = (e+w+i===0)
+    ? '<span class="chip ok">✓ Conforme o standard</span>'
+    : `<span class="chip err">${e} erro${e!==1?"s":""}</span><span class="chip warn">${w} aviso${w!==1?"s":""}</span><span class="chip info">${i} info</span>`;
+}
+
+function renderFindings(f){
+  const box=$("findings");
+  f=f.filter(x=>!x.dup);
+  if(f.length===0){ box.innerHTML='<div class="allok">✓ Nenhum problema encontrado — mensagem conforme o standard IATA.</div>'; return; }
+  box.innerHTML=f.map((x,k)=>`
+    <div class="finding ${x.sev}">
+      <div class="loc" data-line="${x.line}" title="Ir para a linha">L${x.line}${x.col?":"+x.col:""}</div>
+      <div class="msg"><b>${sevLabel[x.sev]}</b> — ${x.msg}</div>
+      <div class="ref">${x.ref}</div>
+    </div>`).join("");
+  box.querySelectorAll(".loc").forEach(el=>el.addEventListener("click",()=>{
+    const t=document.querySelector(`.tl[data-line="${el.dataset.line}"]`);
+    if(t){ t.scrollIntoView({behavior:"smooth",block:"center"}); }
+  }));
+}
+
+function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
+
+function renderTelex(raw,f){
+  const lines=raw.replace(/\r\n/g,"\n").replace(/\r/g,"\n").split("\n");
+  const byLine={};
+  f.forEach(x=>{ if(x.len>0){ (byLine[x.line]=byLine[x.line]||[]).push(x); } });
+  let ruler="";
+  for(let c=1;c<=70;c++){ ruler += (c%10===0)?String(c/10%10):(c%5===0?"·":" "); }
+  const html = lines.map((ln,i)=>{
+    const n=i+1, marks=(byLine[n]||[]).sort((a,b)=>a.col-b.col);
+    let out="", pos=0;
+    marks.forEach(mk=>{
+      const s=Math.max(mk.col-1,pos), e=Math.min(mk.col-1+mk.len, ln.length||mk.col-1+mk.len);
+      if(s>pos) out+=esc(ln.slice(pos,s));
+      const seg=ln.slice(s,e)||"·";
+      out+=`<span class="mark ${mk.sev}" title="${esc(mk.msg.replace(/<[^>]+>/g,""))}">${esc(seg)}</span>`;
+      pos=Math.max(e,pos);
+    });
+    out+=esc(ln.slice(pos));
+    if(ln==="") out="&nbsp;";
+    const cls=marks.some(m=>m.sev==="err")?"line-err":(marks.length?"line-warn":"");
+    return `<div class="tl ${cls}" data-line="${n}"><span class="ln">${n}</span><span class="content"><span class="col64"></span>${out}</span></div>`;
+  }).join("");
+  $("telex").innerHTML=`<div class="ruler">${ruler}</div>${html}`;
+}
+
+/* ---- exemplos ---- */
+const EX_OK=`LISKPTP OPOKPTP
+.FAORMTP 151420
+PNL
+TP1234/16JUL LIS PART1
+RBD J/JCD Y/YBHKM
+-OPO06J
+1ALMEIDA/RUIMR .L/A1B2C3
+2COSTA/ANAMRS/TIAGOMSTR .R/CHLD HK1 12MAY19-1COSTA/TIAGOMSTR
+1FERREIRA/JOAOMR-A3 .R/VGML HK1
+2SANTOS/MARIAMRS/PEDROMR-A3
+-OPO08Y
+1BRAGA/LUISAMS .R/WCHR HK1
+1DUARTE/CARLOSMR .L/X9Y8Z7 .R/TKNE HK1 0471234567890/1
+3LOPES/ANDREMR/SOFIAMRS/RITAMISS .R/KSML NN3
+1MOTA/INESMS .R/INFT HK1
+1PINTO/VASCOMR-B2 .R/EXST HK1 23A
+1ZZ/EXST-B2
+ENDPNL`;
+
+const EX_BAD=`LISKPTP OPOKPT
+.FAORMTP 15142
+PNL
+TP1234/16JLY LIS  PART1
+-OPO06J
+1almeida/RUIMR .L/A1B2C3
+2COSTA/ANAMRS .R/CHLD HK1 12MAY19
+1FERREIRA/JOAOMR-A3 .R/VGGL XY1
+2SANTOS/MARIAMRS/PEDROMR-A3 
+-OPO08Y
+1BRAGA/LUISAMS .R/WCHR HK1 PASSENGER NEEDS FULL ASSISTANCE FROM CHECKIN TO GATE
+.RN/AND ON ARRIVAL
+1ARAUJO/TIAGOMR .P/TEST
+3LOPES/ANDREMR/SOFIAMRS .R/KSML NN3
+1MOTA/INESMS .R/INFT
+ENDADL`;
+
+$("btnValidate").addEventListener("click",run);
+const EX_BY_TYPE={
+  PNL: EX_OK,
+  PSM:`HDQRMNW
+.AMSKPKL 131313
+PSM
+NW055/13MAR AMS PART1
+-DTW 3PAX/4SSR
+DEAF 001F 000C 000Y
+WCHR 001F 000C 001Y
+VIP 001F 000C 000Y
+F CLASS 2PAX/3SSR
+1VINCENT/GERARDMR  22A
+ NW1234F13SFO
+WCHS HAS OWN CARRY CASE
+DEAF
+1ROBERTS/ALANMR  1D
+VIP PRESIDENT OF GEORGIA STATE UNIV
+Y CLASS 1PAX/1SSR
+1NELSON/MARYDR  12A
+WCHR NEEDS ASSISTANCE FOR ALL MOBILE ACTIVITIES
+SI
+EXPECT COMPLAINTS AT ARRIVAL
+ENDPSM`,
+  PTM:`JFKKPBA
+.LHRKPJD 261455
+PTM
+JD1234/26JAN LHRJFK PART1
+AA021 LAX 4Y 3B
+AA021 LAX 1Y 0B.SA
+AA595 DTW 3Y 4B.INF1
+AA665 SJU 1Y 1B.CHD1
+AC189S YUL/S 1F 2B
+CO456/27 DEN 1C 0B
+DL327 MIA 4Y 5B.CHD2.INF1
+AF935 CCS 1Y 3B CHAILLOT/YOLANDAMRS.INF1
+ENDPTM`,
+  PFS:`ZRHKMXR
+.AMSRMKL 260714
+PFS
+KL774/26JUN ZRH PART1
+CFG/020F179Y
+RBD F/FA Y/BEGHKLMQSTVW
+FCO 13/047/032 PAD0/2/1
+-FCO
+OFFLN 1F
+1SETTER/LENMR
+GOSHO 2Y
+2JOHNSON/AL/VIVIAN .L/S4627W/BA
+2KOURAJIAN/ART/PUR
+ENDPFS`,
+  PIL:`PIL
+NX890/27MAY DFW
+FCLASS
+01A DEN GREEN/LEROYMR
+01B JMS JOHNSON/TERRYMRS VGML
+02C DEN OHARA/KENDRAMS VGML SPEAKS GERMAN ONLY
+02D DEN FULTON/ELEANORMS SFML
+CCLASS
+NIL
+YCLASS
+16C DEN BACCOUCHE/LISAMS WCHR AND NECK BRACE
+18J DEN SNYDER/THOMASMR MEDA USING CRUTCHES
+ENDPIL`,
+  SOM:`QU ZRHKPSR
+.LHRKCBA 142015
+SOM
+BA0930/14APR LHR PART1
+-ZRH.02A 05F 12AB 18C 21B 24EF
+PAD
+SI
+EQUIPMENT CHANGE PENDING
+ENDSOM`,
+  SPM:`HDQRMUW
+.MSPJKNW 141815
+SPM
+UW888/08AUG JMS PART1
+-DEN.06EF 14ABC
+ENDSPM`,
+  FTL:`HDQRMNW
+.AMSKMKL 131313
+FTL
+NW0055/13MAR AMS PART1
+CFG/113Y/MD8
+STD/1405
+-MSP010C
+1VERVAAT/HAROLDMR
+.L/ABC123
+.M/CX3322F22HKGNRT1230HK
+.R/FQTU KL 654321T
+ENDFTL`,
+  PRL:`HDQRMNW
+.AMSKMKL 131313
+PRL
+NW0055/13MAR AMS PART1
+CFG/16C120Y
+RBD C/CDJZ Y/BEGHKLMQSTVW
+-MSP010C
+1VERVAAT/JACKMR
+.L/ABC123
+.M/CX3322F28HKGTYO1230HK
+.ID1/0070-22JAN97
+.W/P/5
+.W/K/2/20
+.BG/001
+.N/0074123456003/SFO
+.I/KL312C13ZRH
+.O/NW1234F13SFO
+.R/VGML
+.S/US/123454321///
+ENDPRL`,
+  ETL:`HDQRMNW
+.AMSKMKL 131313
+ETL
+NW0055/13MAR AMS PART1
+CFG/F22C33Y222
+ATD/1427
+-MSP010C
+1VERVAAT/JILLMRS
+.L/ABC123/NW
+.M/CX3322F22HKGNRT1230HK
+.R/TKNE HK1 0188765434567/2
+ENDETL`,
+  MVT:`MVT
+TEF402/27.LNDIG.TRF
+AD0410/0414 EA0459 BGO
+DL89/0007
+PX57
+SI OPERATING TRF BGO`,
+  DIV:`DIV
+TEF0981/13.LNDIG.HFT
+EA0432 TOS
+DRWT PX023`,
+  SSM:`SSM
+UTC
+NEW
+TEF9999
+04APR24 03MAY24 1234567
+J 738 C16M165VV738B.X103
+OSL1455 KKN1550
+OSLKKN 10/XY1234/YX432
+//
+CNL
+TEF9994
+06FEB24 12FEB24 1234567`,
+  ASM:`ASM
+UTC
+NEW
+TEF7999/04APR24
+J 738 C16M165VV738B.X103
+OSL1455 KKN1550
+//
+CNL
+TEF7995/06FEB24`
+};
+$("btnExample").addEventListener("click",()=>{ $("input").value=EX_BY_TYPE[$("msgtype").value]||EX_OK; run(); });
+$("btnExampleBad").addEventListener("click",()=>{$("input").value=EX_BAD; run();});
+$("btnClear").addEventListener("click",()=>{$("input").value=""; $("summary").hidden=true;
+  $("findings").innerHTML='<div class="empty">Cola uma mensagem e carrega em <b>Validar</b>.</div>';
+  $("telex").innerHTML='<div class="empty" style="color:var(--telex-dim)">A mensagem validada é impressa aqui.</div>';});
+</script>
+</body>
+</html>

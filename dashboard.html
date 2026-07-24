@@ -266,13 +266,26 @@
       <option value="preco_desc">Preço ↓</option>
       <option value="recente">Mais recentes</option>
     </select>
-    <div class="price-slider-wrap">
-      <label>
-        <span>💰 Preço</span>
-        <span id="slider-label">até <b id="slider-val">sem limite</b></span>
-      </label>
-      <input type="range" id="fpreco" min="0" max="5000000" step="25000" value="5000000"
-             oninput="updateSlider(this.value);filtrar()">
+    <div class="preco-filtro" style="display:flex;align-items:center;gap:6px">
+      <span style="font-size:12px;color:var(--g500);white-space:nowrap">💰 Preço</span>
+      <select id="fpreset" onchange="aplicarPreset(this.value)"
+              style="padding:7px 8px;border:1px solid var(--g200);border-radius:7px;font-size:12px">
+        <option value="">Qualquer</option>
+        <option value="0|100000">até 100k€</option>
+        <option value="0|150000">até 150k€</option>
+        <option value="0|200000">até 200k€</option>
+        <option value="0|250000">até 250k€</option>
+        <option value="0|350000">até 350k€</option>
+        <option value="0|500000">até 500k€</option>
+        <option value="0|1000000">até 1M€</option>
+        <option value="1000000|">acima de 1M€</option>
+      </select>
+      <input type="number" id="fpmin" placeholder="mín" min="0" step="5000"
+             onchange="precoManual();filtrar()" onkeydown="if(event.key==='Enter')this.blur()"
+             style="width:82px;padding:7px;border:1px solid var(--g200);border-radius:7px;font-size:12px">
+      <input type="number" id="fpmax" placeholder="máx" min="0" step="5000"
+             onchange="precoManual();filtrar()" onkeydown="if(event.key==='Enter')this.blur()"
+             style="width:82px;padding:7px;border:1px solid var(--g200);border-radius:7px;font-size:12px">
     </div>
     <button onclick="toggleGrupos()" id="btn-grupos"
       style="padding:7px 12px;border:1px solid var(--g200);border-radius:7px;
@@ -949,14 +962,23 @@ async function apagarImovel(id, btn){
 }
 
 // ── SLIDER DE PREÇO ─────────────────────────────────────
-let precoMax = 5000000;
-function updateSlider(val){
-  precoMax = parseInt(val);
-  const n = parseInt(val);
-  const label = n>=5000000 ? 'sem limite'
-              : n>=1000000 ? (n/1000000).toFixed(1).replace('.0','')+'M€'
-              : (n/1000).toFixed(0)+'k€';
-  document.getElementById('slider-val').textContent = label;
+let _manterLimite = false;   // true quando vem do "Mostrar mais"
+let _renderLimite = 60;      // cards desenhados de cada vez
+let _listaFiltrada = [];     // resultado do filtro actual
+// Preço: preset preenche os campos; escrever nos campos limpa o preset.
+// Ambos disparam UMA vez (evento 'change'), não a cada pixel como o slider
+// antigo — que re-renderizava os 1400+ cards dezenas de vezes por segundo.
+function aplicarPreset(v){
+  const min = document.getElementById('fpmin'), max = document.getElementById('fpmax');
+  if(!v){ min.value=''; max.value=''; }
+  else { const [a,b] = v.split('|'); min.value = a||''; max.value = b||''; }
+  filtrar();
+}
+function precoManual(){ document.getElementById('fpreset').value = ''; }
+function limitesPreco(){
+  const min = parseInt(document.getElementById('fpmin').value);
+  const max = parseInt(document.getElementById('fpmax').value);
+  return [isNaN(min)?null:min, isNaN(max)?null:max];
 }
 
 // ── MÉDIA POR ZONA (para oportunidades) ──────────────────
@@ -1068,13 +1090,16 @@ filtrar = function(){
   const fonte=document.getElementById('ff').value;
   const est=document.getElementById('fe').value;
   const ord=document.getElementById('fo').value;
-  const precoLimite = precoMax;
+  const [pMin, pMax] = limitesPreco();
+  if(!_manterLimite) _renderLimite = 60;   // filtro novo → recomeça no 1º lote
+  _manterLimite = false;
 
   let lista=todos.filter(i=>{
     if(txt&&!(i.titulo||'').toLowerCase().includes(txt)) return false;
     if(zona&&i.zona!==zona) return false;
     if(fonte&&i.fonte!==fonte) return false;
-    if(precoLimite<5000000 && i.preco_valor && i.preco_valor>precoLimite) return false;
+    if(pMin!==null && (!i.preco_valor || i.preco_valor < pMin)) return false;
+    if(pMax!==null && i.preco_valor && i.preco_valor > pMax) return false;
     if(est==='favorito'&&!i.favorito) return false;
     if(est==='removido'&&i.disponivel) return false;
     if(['visitar','visitado','rejeitado'].includes(est)&&i.estado!==est) return false;
@@ -1099,9 +1124,33 @@ filtrar = function(){
     renderGrupos(lista);
   } else {
     grid.style.display='grid';
-    grid.innerHTML=lista.map(renderCard).join('');
+    // Render incremental: com 1400+ imóveis, desenhar tudo de uma vez
+    // bloqueava o browser a cada filtro. Mostra um lote e cresce a pedido.
+    _listaFiltrada = lista;
+    const lote = lista.slice(0, _renderLimite);
+    grid.innerHTML = lote.map(renderCard).join('');
+    const btn = document.getElementById('btn-mais');
+    if(btn) btn.remove();
+    if(lista.length > _renderLimite){
+      const restantes = lista.length - _renderLimite;
+      grid.insertAdjacentHTML('afterend',
+        `<div id="btn-mais" style="text-align:center;padding:16px">
+           <button onclick="mostrarMais()"
+                   style="padding:10px 22px;border:1px solid var(--g200);border-radius:8px;
+                          background:white;cursor:pointer;font-size:13px">
+             Mostrar mais ${Math.min(60, restantes)} (faltam ${restantes})
+           </button>
+         </div>`);
+    }
   }
 };
+
+// Estado do render incremental
+function mostrarMais(){
+  _renderLimite += 60;
+  _manterLimite = true;    // não repor: o utilizador pediu mais
+  filtrar();
+}
 
 // ── BARRA DE ESTADO ──────────────────────────────────────
 let _scraper_status = null;
